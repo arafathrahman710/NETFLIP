@@ -171,9 +171,13 @@ fun MainScreen() {
 
     var currentUrl by remember { mutableStateOf("") }
     
-    val activity = androidx.compose.ui.platform.LocalContext.current as? ComponentActivity
+    val activity = androidx.compose.ui.platform.LocalContext.current as? androidx.activity.ComponentActivity
+    val fullScreenHelper = remember(activity) { activity?.let { com.example.util.FullScreenHelper(it) } }
+
     BackHandler(enabled = true) {
-        if (selectedTab != 0) {
+        if (fullScreenHelper?.isFullScreen() == true) {
+            fullScreenHelper?.hideCustomView()
+        } else if (selectedTab != 0) {
             selectedTab = 0
         } else if (webViewRef?.canGoBack() == true) {
             webViewRef?.goBack()
@@ -205,6 +209,7 @@ fun MainScreen() {
                         onLoadingStateChanged = { isLoading = it },
                         onNavigationStateChanged = { canGoBack = it },
                         onUrlChanged = { currentUrl = it },
+                        fullScreenHelper = fullScreenHelper,
                         modifier = Modifier.fillMaxSize().let {
                             if (selectedTab > 1) it.background(NetflixDark) else it
                         }
@@ -588,6 +593,7 @@ fun NetflipWebView(
     onLoadingStateChanged: (Boolean) -> Unit,
     onNavigationStateChanged: (Boolean) -> Unit,
     onUrlChanged: (String) -> Unit = {},
+    fullScreenHelper: com.example.util.FullScreenHelper? = null,
     modifier: Modifier = Modifier
 ) {
     AndroidView(
@@ -616,6 +622,27 @@ fun NetflipWebView(
                     displayZoomControls = false
                     cacheMode = WebSettings.LOAD_DEFAULT
                     databaseEnabled = true
+                    setSupportMultipleWindows(true)
+                    javaScriptCanOpenWindowsAutomatically = false
+                }
+                
+                webChromeClient = object : android.webkit.WebChromeClient() {
+                    override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean {
+                        // Return false to block the popup window entirely (like 1xbet, aliexpress)
+                        return false
+                    }
+                    
+                    override fun onShowCustomView(view: android.view.View?, callback: CustomViewCallback?) {
+                        super.onShowCustomView(view, callback)
+                        if (view != null && callback != null) {
+                            fullScreenHelper?.showCustomView(view, callback)
+                        }
+                    }
+
+                    override fun onHideCustomView() {
+                        super.onHideCustomView()
+                        fullScreenHelper?.hideCustomView()
+                    }
                 }
                 
                 setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
@@ -673,7 +700,8 @@ fun NetflipWebView(
                 val adBlockKeywords = listOf(
                     "popunder", "adnetwork", "advertisement", "ad-script", "tracking",
                     "banner_ad", "popads", "propeller", "adsterra", "exoclick",
-                    "1xbet", "aliexpress", "bet365", "melbet", "linebet"
+                    "1xbet", "ix-bet", "1xlite", "aliexpress", "s.click.aliexpress", 
+                    "bet365", "melbet", "linebet", "trafficjunky.net", "vast", "vmap", "ima3", "adserver", "preroll", "midroll", "postroll"
                 )
 
                 webViewClient = object : WebViewClient() {
@@ -700,86 +728,76 @@ fun NetflipWebView(
                         
                         val jsCode = """
                             (function() {
-                                // 1. CSS Blocker
+                                // --- Hide ad elements via CSS ---
                                 const style = document.createElement('style');
                                 style.textContent = `
-                                    ins.adsbygoogle, .adsbygoogle,
-                                    [id^="google_ads"], [id*="doubleclick"],
-                                    .popup, .pop-up, .overlay-ad, .ad-overlay,
-                                    .interstitial, [class*="interstitial"],
-                                    script[src*="ads"], script[src*="doubleclick"],
-                                    .advertisement, [data-ad], [aria-label="advertisement"],
-                                    #ad-container, .video-ads, .ytp-ad-module, .ad-showing,
-                                    div[id^="ad_"], div[class^="ad_"],
-                                    iframe[src*="ads"], iframe[src*="doubleclick"], iframe[src*="popads"]
-                                    { display: none !important; visibility: hidden !important; opacity: 0 !important; height: 0 !important; width: 0 !important; position: absolute !important; pointer-events: none !important; }
+                                  iframe[src*="ad"], iframe[id*="ad"], iframe[class*="ad"],
+                                  div[id*="ad-"], div[class*="ad-"], div[id*="ads"], div[class*="ads"],
+                                  div[id*="banner"], div[class*="banner"],
+                                  ins.adsbygoogle, .adsbygoogle,
+                                  [id^="google_ads"], [id*="doubleclick"],
+                                  .popup, .pop-up, .overlay-ad, .ad-overlay,
+                                  [class*="popup"], [id*="popup"],
+                                  .interstitial, [class*="interstitial"],
+                                  .vast-ad, .video-ad-overlay, [id*="ad-overlay"],
+                                  #ad, .ad, #ads, .ads, .advertisement,
+                                  [data-ad], [data-ads], [aria-label="advertisement"]
+                                  { display: none !important; visibility: hidden !important; opacity: 0 !important; height: 0 !important; }
                                 `;
                                 document.head.appendChild(style);
 
-                                // 2. Popup Blocker (Aggressive)
+                                // --- Disable window.open (popunder block) ---
                                 window.open = function() { return null; };
                                 window._open = window.open;
+
+                                // --- Prevent click hijacking / forced redirects ---
                                 document.addEventListener('click', function(e) {
-                                    const target = e.target.closest('a');
-                                    if (target && target.target === '_blank') {
-                                        const href = target.href;
-                                        if (href && !href.includes('stream.terousd.online') && !href.includes('netflip') && !href.includes('terousd')) {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                        }
+                                  let el = e.target;
+                                  while (el) {
+                                    if (el.tagName === 'A' && el.href &&
+                                        !el.href.includes('stream.terousd.online') && !el.href.includes('netflip') && !el.href.includes('terousd')) {
+                                      e.preventDefault();
+                                      e.stopImmediatePropagation();
                                     }
+                                    el = el.parentElement;
+                                  }
                                 }, true);
 
-                                // Intercept dynamic script injections
-                                const originalAppendChild = Node.prototype.appendChild;
-                                Node.prototype.appendChild = function(node) {
-                                    if (node.tagName === 'SCRIPT') {
-                                        const src = node.src || '';
-                                        if (src.includes('ads') || src.includes('pop') || src.includes('track') || src.includes('click')) {
-                                            if (!src.includes('stream.terousd.online') && !src.includes('netflip')) {
-                                                return node; // block execution
-                                            }
-                                        }
-                                    }
-                                    return originalAppendChild.call(this, node);
-                                };
+                                // --- Continuously remove dynamically injected ad elements ---
+                                setInterval(function() {
+                                  document.querySelectorAll(
+                                    'iframe[src*="ad"], .adsbygoogle, [id*="ad-slot"], [class*="ad-unit"], .vast-ad, .video-ad-overlay'
+                                  ).forEach(el => el.remove());
+                                  
+                                  const replaceText = () => {
+                                      const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                                      let node;
+                                      while(node = walk.nextNode()) {
+                                          if(node.nodeValue.match(/Terousd/i)) {
+                                              node.nodeValue = node.nodeValue.replace(/Terousd/gi, 'NETFLIP');
+                                          }
+                                      }
+                                  };
+                                  replaceText();
+                                }, 500);
 
-                                // 3. Mutation Observer for Ads and Text Replacement
-                                const adSelectors = ['.adsbygoogle', '[id*="ad-slot"]', '[class*="ad-unit"]', '.video-ads', '.ytp-ad-module', 'iframe[src*="ads"]', 'div[class*="ad-"]'];
-                                const observer = new MutationObserver(function(mutations) {
-                                    // Remove Ads
-                                    adSelectors.forEach(sel => {
-                                        document.querySelectorAll(sel).forEach(el => el.remove());
-                                    });
-                                    // Auto-skip video ads
-                                    const skipBtn = document.querySelector('.ytp-ad-skip-button, .skip-ad, .video-ad-skip');
-                                    if(skipBtn) skipBtn.click();
-                                    const vids = document.querySelectorAll('video');
-                                    vids.forEach(v => {
-                                        if(v.closest('.ad-showing') || document.querySelector('.video-ads') || (v.src && (v.src.includes('1xbet') || v.src.includes('ads') || v.src.includes('aliexpress')))) {
-                                            if(isFinite(v.duration) && !isNaN(v.duration)) {
-                                                v.currentTime = v.duration;
-                                            } else {
-                                                v.muted = true;
-                                                v.style.display = 'none';
-                                            }
-                                        }
-                                    });
+                                // --- MutationObserver for ads added after page load ---
+                                const adSelectors = ['iframe[src*="ad"]', '.adsbygoogle', '[id*="ad-slot"]', '[class*="ad-unit"]'];
+                                const observer = new MutationObserver(function() {
+                                  adSelectors.forEach(sel => {
+                                    document.querySelectorAll(sel).forEach(el => el.remove());
+                                  });
+                                  const skipBtn = document.querySelector('.ytp-ad-skip-button, .skip-ad, .video-ad-skip');
+                                  if(skipBtn) skipBtn.click();
+                                  const vids = document.querySelectorAll('video');
+                                  vids.forEach(v => {
+                                      if(v.closest('.ad-showing') || document.querySelector('.video-ads') || (v.src && (v.src.includes('1xbet') || v.src.includes('ads') || v.src.includes('aliexpress')))) {
+                                          v.muted = true;
+                                          v.style.display = 'none';
+                                      }
+                                  });
                                 });
                                 observer.observe(document.body, { childList: true, subtree: true });
-
-                                // 4. Text Replacement
-                                const replaceText = () => {
-                                    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                                    let node;
-                                    while(node = walk.nextNode()) {
-                                        if(node.nodeValue.match(/Terousd/i)) {
-                                            node.nodeValue = node.nodeValue.replace(/Terousd/gi, 'NETFLIP');
-                                        }
-                                    }
-                                };
-                                replaceText();
-                                setInterval(replaceText, 2000); // Check periodically
                             })();
                         """.trimIndent()
                         
@@ -815,8 +833,6 @@ fun NetflipWebView(
                         return false // Allow
                     }
                 }
-                
-                webChromeClient = WebChromeClient()
                 
                 loadUrl("https://stream.terousd.online/")
                 onWebViewCreated(this)
