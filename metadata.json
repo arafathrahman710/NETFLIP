@@ -1,0 +1,6 @@
+{
+  "name": "NETFLIP",
+  "description": "A streaming app with built-in ad blocking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
