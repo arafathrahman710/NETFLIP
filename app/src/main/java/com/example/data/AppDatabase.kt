@@ -5,7 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [SavedVideo::class, WatchlistVideo::class, SearchHistory::class, FavouriteVideo::class], version = 4, exportSchema = false)
+@Database(entities = [SavedVideo::class, WatchlistVideo::class, SearchHistory::class, FavouriteVideo::class], version = 5, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun savedVideoDao(): SavedVideoDao
     abstract fun watchlistDao(): WatchlistDao

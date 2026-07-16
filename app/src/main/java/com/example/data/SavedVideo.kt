@@ -8,5 +8,6 @@ data class SavedVideo(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val title: String,
     val url: String,
+    val filePath: String? = null,
     val timestamp: Long = System.currentTimeMillis()
 )

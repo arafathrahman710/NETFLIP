@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -81,6 +82,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -98,6 +101,7 @@ import com.example.ui.theme.NetflixDark
 import com.example.ui.theme.NetflixDarker
 import com.example.ui.theme.NetflixGrayText
 import com.example.ui.theme.NetflixRed
+import com.example.ui.theme.glassmorphism
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -172,11 +176,16 @@ fun MainScreen() {
     var showDownloadDialog by remember { mutableStateOf(false) }
     var showNotificationsDialog by remember { mutableStateOf(false) }
     var downloadIsSeries by remember { mutableStateOf(false) }
+    var webViewOpacity by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
+    var webViewScale by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
+    var webViewOffsetY by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
 
     var currentUrl by remember { mutableStateOf("") }
+    var wasMoviePage by remember { mutableStateOf(false) }
     
     val activity = androidx.compose.ui.platform.LocalContext.current as? androidx.activity.ComponentActivity
     val fullScreenHelper = remember(activity) { activity?.let { com.example.util.FullScreenHelper(it) } }
+    val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
 
     BackHandler(enabled = true) {
         if (fullScreenHelper?.isFullScreen() == true) {
@@ -222,9 +231,17 @@ fun MainScreen() {
                         onNavigationStateChanged = { canGoBack = it },
                         onUrlChanged = { currentUrl = it },
                         fullScreenHelper = fullScreenHelper,
-                        modifier = Modifier.fillMaxSize().let {
-                            if (selectedTab > 1) it.background(NetflixDark) else it
-                        }
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = webViewScale
+                                scaleY = webViewScale
+                                translationY = webViewOffsetY
+                                alpha = webViewOpacity
+                            }
+                            .let {
+                                if (selectedTab > 1) it.background(NetflixDark) else it
+                            }
                     )
                     
                     if (selectedTab > 1) { 
@@ -249,6 +266,159 @@ fun MainScreen() {
                 }
             }
 
+            LaunchedEffect(currentUrl) {
+                val cleanUrl = currentUrl.trim().lowercase()
+                var isMoviePage = false
+                if (cleanUrl.isNotEmpty() && 
+                    cleanUrl != "https://stream.terousd.online" && 
+                    cleanUrl != "https://stream.terousd.online/" && 
+                    cleanUrl != "http://stream.terousd.online" && 
+                    cleanUrl != "http://stream.terousd.online/") {
+                    
+                    val hasGenreCategory = cleanUrl.contains("/genre/") ||
+                                           cleanUrl.contains("/genres/") ||
+                                           cleanUrl.contains("/category/") ||
+                                           cleanUrl.contains("/year/") ||
+                                           cleanUrl.contains("/country/") ||
+                                           cleanUrl.contains("/page/") ||
+                                           cleanUrl.contains("/search/") ||
+                                           cleanUrl.contains("/type/") ||
+                                           cleanUrl.contains("?s=") ||
+                                           cleanUrl.contains("?search=") ||
+                                           cleanUrl.contains("?genre=") ||
+                                           cleanUrl.contains("?year=")
+                    
+                    if (!hasGenreCategory) {
+                        try {
+                            val uri = android.net.Uri.parse(currentUrl)
+                            val segments = uri.pathSegments ?: emptyList()
+                            val cleanSegments = segments.filter { it.isNotEmpty() }
+                            if (cleanSegments.isNotEmpty()) {
+                                val firstSegment = cleanSegments.first().lowercase()
+                                val systemPages = listOf(
+                                    "wp-admin", "wp-content", "wp-includes", "assets", "css", "js", "images",
+                                    "contact", "about", "dmca", "privacy-policy", "terms", "search", 
+                                    "genre", "genres", "category", "categories", "tag", "tags", 
+                                    "year", "years", "country", "countries", "page", "trending", 
+                                    "popular", "top-imdb", "ratings"
+                                )
+                                if (firstSegment !in systemPages) {
+                                    val singleSegmentListingPages = listOf(
+                                        "movies", "movie", "series", "tv", "tvshows", "tvshow", 
+                                        "episodes", "episode", "seasons", "season"
+                                    )
+                                    if (cleanSegments.size == 1) {
+                                        isMoviePage = firstSegment !in singleSegmentListingPages
+                                    } else {
+                                        val validPrefixes = listOf(
+                                            "movie", "movies", "series", "tv", "tvshows", "tvshow", 
+                                            "episode", "episodes", "season", "seasons", "watch", "title", "play"
+                                        )
+                                        if (firstSegment in validPrefixes) {
+                                            isMoviePage = cleanSegments[1].isNotEmpty()
+                                        } else {
+                                            val host = uri.host ?: ""
+                                            isMoviePage = host.contains("terousd")
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // ignore
+                        }
+                    }
+                }
+
+                val wasMovie = wasMoviePage
+                wasMoviePage = isMoviePage
+
+                if (isMoviePage) {
+                    webViewOpacity = 0f
+                    webViewScale = 0.85f
+                    webViewOffsetY = 200f
+                    
+                    // Animate parallelly using coroutine launch
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 0f,
+                            targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 250, 
+                                easing = androidx.compose.animation.core.LinearEasing
+                            )
+                        ) { value, _ ->
+                            webViewOpacity = value
+                        }
+                    }
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 0.85f,
+                            targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.spring(
+                                dampingRatio = 0.8f,
+                                stiffness = 300f
+                            )
+                        ) { value, _ ->
+                            webViewScale = value
+                        }
+                    }
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 200f,
+                            targetValue = 0f,
+                            animationSpec = androidx.compose.animation.core.spring(
+                                dampingRatio = 0.8f,
+                                stiffness = 300f
+                            )
+                        ) { value, _ ->
+                            webViewOffsetY = value
+                        }
+                    }
+                } else if (wasMovie) {
+                    webViewOpacity = 0f
+                    webViewScale = 1.15f
+                    webViewOffsetY = 0f
+                    
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 0f,
+                            targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 200, 
+                                easing = androidx.compose.animation.core.LinearEasing
+                            )
+                        ) { value, _ ->
+                            webViewOpacity = value
+                        }
+                    }
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 1.15f,
+                            targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.spring(
+                                dampingRatio = 0.85f,
+                                stiffness = 350f
+                            )
+                        ) { value, _ ->
+                            webViewScale = value
+                        }
+                    }
+                } else {
+                    webViewScale = 1f
+                    webViewOffsetY = 0f
+                    webViewOpacity = 0f
+                    androidx.compose.animation.core.animate(
+                        initialValue = 0f,
+                        targetValue = 1f,
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = 280, 
+                            easing = androidx.compose.animation.core.FastOutSlowInEasing
+                        )
+                    ) { value, _ ->
+                        webViewOpacity = value
+                    }
+                }
+            }
             LaunchedEffect(isLoading) {
                 if (isLoading) {
                     delay(3000)
@@ -282,7 +452,17 @@ fun MainScreen() {
             AnimatedContent(
                 targetState = selectedTab,
                 transitionSpec = {
-                    fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+                    if (targetState == 3) {
+                        (fadeIn(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) + 
+                         androidx.compose.animation.slideInVertically(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) { it / 2 }) togetherWith 
+                        fadeOut(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut))
+                    } else if (initialState == 3) {
+                        fadeIn(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) togetherWith 
+                        (fadeOut(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) + 
+                         androidx.compose.animation.slideOutVertically(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) { it / 2 })
+                    } else {
+                        fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+                    }
                 },
                 label = "Tab Transition"
             ) { targetTab ->
@@ -290,14 +470,100 @@ fun MainScreen() {
                     0, 1 -> {
                         // Empty box because WebView is behind
                         Box(modifier = Modifier.fillMaxSize()) {
-                            val isMovieOrSeries = currentUrl.contains("movie") || currentUrl.contains("series") || currentUrl.contains("tv") || currentUrl.contains("episode") || currentUrl.contains("watch") || currentUrl.contains("netflip.com/title")
-                            if (isMovieOrSeries) {
+                            val isMovieOrSeries = remember(currentUrl) {
+                                val cleanUrl = currentUrl.trim().lowercase()
+                                if (cleanUrl.isEmpty()) return@remember false
+                                
+                                if (cleanUrl == "https://stream.terousd.online" ||
+                                    cleanUrl == "https://stream.terousd.online/" ||
+                                    cleanUrl == "http://stream.terousd.online" ||
+                                    cleanUrl == "http://stream.terousd.online/") {
+                                    return@remember false
+                                }
+                                
+                                if (cleanUrl.contains("/genre/") ||
+                                    cleanUrl.contains("/genres/") ||
+                                    cleanUrl.contains("/category/") ||
+                                    cleanUrl.contains("/year/") ||
+                                    cleanUrl.contains("/country/") ||
+                                    cleanUrl.contains("/page/") ||
+                                    cleanUrl.contains("/search/") ||
+                                    cleanUrl.contains("/type/") ||
+                                    cleanUrl.contains("?s=") ||
+                                    cleanUrl.contains("?search=") ||
+                                    cleanUrl.contains("?genre=") ||
+                                    cleanUrl.contains("?year=")) {
+                                    return@remember false
+                                }
+                                
+                                try {
+                                    val uri = android.net.Uri.parse(currentUrl)
+                                    val segments = uri.pathSegments ?: emptyList()
+                                    
+                                    val cleanSegments = segments.filter { it.isNotEmpty() }
+                                    if (cleanSegments.isEmpty()) {
+                                        return@remember false
+                                    }
+                                    
+                                    val firstSegment = cleanSegments.first().lowercase()
+                                    
+                                    // System segments/pages to exclude
+                                    val systemPages = listOf(
+                                        "wp-admin", "wp-content", "wp-includes", "assets", "css", "js", "images",
+                                        "contact", "about", "dmca", "privacy-policy", "terms", "search", 
+                                        "genre", "genres", "category", "categories", "tag", "tags", 
+                                        "year", "years", "country", "countries", "page", "trending", 
+                                        "popular", "top-imdb", "ratings"
+                                    )
+                                    
+                                    if (firstSegment in systemPages) {
+                                        return@remember false
+                                    }
+                                    
+                                    // Single segment listing pages to exclude
+                                    val singleSegmentListingPages = listOf(
+                                        "movies", "movie", "series", "tv", "tvshows", "tvshow", 
+                                        "episodes", "episode", "seasons", "season"
+                                    )
+                                    
+                                    if (cleanSegments.size == 1) {
+                                        // If there's only 1 segment, check that it's not a general listing page like "/movies/" or "/tv/"
+                                        firstSegment !in singleSegmentListingPages
+                                    } else {
+                                        // If there are 2 or more segments, and the first segment is a listing type prefix,
+                                        // e.g. "/movie/avengers/", we want to show buttons.
+                                        val validPrefixes = listOf(
+                                            "movie", "movies", "series", "tv", "tvshows", "tvshow", 
+                                            "episode", "episodes", "season", "seasons", "watch", "title", "play"
+                                        )
+                                        if (firstSegment in validPrefixes) {
+                                            cleanSegments[1].isNotEmpty()
+                                        } else {
+                                            val host = uri.host ?: ""
+                                            host.contains("terousd")
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    false
+                                }
+                            }
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = isMovieOrSeries,
+                                enter = androidx.compose.animation.slideInVertically(
+                                    initialOffsetY = { it },
+                                    animationSpec = androidx.compose.animation.core.tween(durationMillis = 400, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                                ) + androidx.compose.animation.fadeIn(),
+                                exit = androidx.compose.animation.slideOutVertically(
+                                    targetOffsetY = { it },
+                                    animationSpec = androidx.compose.animation.core.tween(durationMillis = 300, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                                ) + androidx.compose.animation.fadeOut(),
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(24.dp)
+                                    .padding(bottom = 72.dp)
+                            ) {
                                 // Add Floating Action Buttons for Watchlist, Favourite, and Download
                                 Row(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .padding(24.dp)
-                                        .padding(bottom = 72.dp),
                                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                                 ) {
                                     FloatingActionButton(
@@ -343,7 +609,7 @@ fun MainScreen() {
                                             webViewRef?.let { wv ->
                                                 val url = wv.url ?: ""
                                                 // Trigger fake download simulation
-                                                com.example.util.DownloadSimulationManager.startDownload(wv.context, wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video", url)
+                                                com.example.util.RealDownloadManager.startDownload(wv.context, wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video", url)
                                             }
                                         },
                                         containerColor = NetflixRed,
@@ -361,7 +627,7 @@ fun MainScreen() {
             
             if (showNotificationsDialog) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showNotificationsDialog = false }) {
-                    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
+                    val allDownloads by com.example.util.RealDownloadManager.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -371,21 +637,43 @@ fun MainScreen() {
                         Column {
                             Text("Notifications", color = Color.White, fontSize = 20.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                             Spacer(modifier = Modifier.height(16.dp))
-                            if (activeDownloads.isEmpty()) {
+                            if (allDownloads.isEmpty()) {
                                 Text("No active downloads or notifications.", color = Color.Gray)
                             } else {
-                                androidx.compose.foundation.lazy.LazyColumn {
-                                    items(activeDownloads) { download ->
-                                        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                                            Text(download.title, color = Color.White, maxLines = 1)
+                                androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+                                    items(allDownloads) { download ->
+                                        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                                            Text(download.title, color = Color.White, maxLines = 1, fontSize = 14.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                                             Spacer(modifier = Modifier.height(4.dp))
                                             androidx.compose.material3.LinearProgressIndicator(
                                                 progress = { download.progress },
                                                 modifier = Modifier.fillMaxWidth().height(4.dp),
-                                                color = NetflixRed,
+                                                color = when (download.status) {
+                                                    com.example.util.DownloadStatus.COMPLETED -> Color.Green
+                                                    com.example.util.DownloadStatus.FAILED -> NetflixRed
+                                                    else -> NetflixRed
+                                                },
                                                 trackColor = Color.DarkGray
                                             )
-                                            Text("${(download.progress * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+                                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                                Text(
+                                                    text = when (download.status) {
+                                                        com.example.util.DownloadStatus.COMPLETED -> "Completed"
+                                                        com.example.util.DownloadStatus.FAILED -> "Failed"
+                                                        else -> "${(download.progress * 100).toInt()}%"
+                                                    },
+                                                    color = Color.Gray, fontSize = 12.sp
+                                                )
+                                                Text(text = download.speedStr, color = Color.Gray, fontSize = 12.sp)
+                                            }
+                                            if (download.status == com.example.util.DownloadStatus.FAILED) {
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                TextButton(onClick = {
+                                                    com.example.util.RealDownloadManager.retryDownload(activity ?: return@TextButton, download.id)
+                                                }, modifier = Modifier.height(30.dp)) {
+                                                    Text("Retry", color = NetflixRed, fontSize = 12.sp)
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -456,7 +744,8 @@ fun MainScreen() {
 
 @Composable
 fun HomeHeader(onProfileClick: () -> Unit, onNotificationsClick: () -> Unit) {
-    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val activeDownloads by com.example.util.RealDownloadManager.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -514,7 +803,8 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
     val db = remember { AppDatabase.getDatabase(context) }
     val watchlistVideos by db.watchlistDao().getAllWatchlistVideos().collectAsStateWithLifecycle(initialValue = emptyList())
     val favouriteVideos by db.favouriteVideoDao().getAllFavourites().collectAsStateWithLifecycle(initialValue = emptyList())
-    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val activeDownloads by com.example.util.RealDownloadManager.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
 
 
     var smartEnhance by remember { mutableStateOf(com.example.util.PreferencesManager.isSmartEnhanceEnabled(context)) }
@@ -522,14 +812,18 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
     var dolbyVision by remember { mutableStateOf(com.example.util.PreferencesManager.isDolbyVisionEnabled(context)) }
 
     fun checkHdrSupport(type: Int): Boolean {
-        val display = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-            context.display
-        } else {
-            @Suppress("DEPRECATION")
-            (context.getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay
+        return try {
+            val display = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                context.display
+            } else {
+                @Suppress("DEPRECATION")
+                (context.getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay
+            }
+            val capabilities = display?.hdrCapabilities?.supportedHdrTypes ?: intArrayOf()
+            if (type == -1) capabilities.isNotEmpty() else capabilities.contains(type)
+        } catch (e: Exception) {
+            false
         }
-        val capabilities = display?.hdrCapabilities?.supportedHdrTypes ?: intArrayOf()
-        return if (type == -1) capabilities.isNotEmpty() else capabilities.contains(type)
     }
 
     Box(
@@ -664,10 +958,6 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                             onCheckedChange = {
                                 smartEnhance = it
                                 com.example.util.PreferencesManager.setSmartEnhanceEnabled(context, it)
-                                if (it) {
-                                    hdrEnabled = false
-                                    dolbyVision = false
-                                }
                             }
                         )
                     }
@@ -696,7 +986,9 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                                 hdrEnabled = it
                                 com.example.util.PreferencesManager.setHdrEnabled(context, it)
                                 if (it) {
-                                    smartEnhance = false
+                                    if (dolbyVision) {
+                                        android.widget.Toast.makeText(context, "Dolby Vision disabled due to conflict", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
                                     dolbyVision = false
                                 }
                             }
@@ -727,7 +1019,9 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                                 dolbyVision = it
                                 com.example.util.PreferencesManager.setDolbyVisionEnabled(context, it)
                                 if (it) {
-                                    smartEnhance = false
+                                    if (hdrEnabled) {
+                                        android.widget.Toast.makeText(context, "HDR disabled due to conflict", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
                                     hdrEnabled = false
                                 }
                             }
@@ -759,7 +1053,7 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                             Box(modifier = Modifier
                                 .fillMaxWidth()
                                 .height(400.dp)
-                                .background(NetflixDarker, RoundedCornerShape(16.dp))
+                                .background(if (isGlassmorphism) Color.Transparent else NetflixDarker, RoundedCornerShape(16.dp)).glassmorphism(isGlassmorphism)
                                 .clip(RoundedCornerShape(16.dp))
                             ) {
                                 AndroidView(factory = { ctx ->
@@ -775,7 +1069,9 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                                             loadWithOverviewMode = true
                                             databaseEnabled = true
                                             userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                                            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                                         }
+                                        webChromeClient = android.webkit.WebChromeClient()
                                         webViewClient = android.webkit.WebViewClient()
                                         loadUrl("https://fast.com")
                                     }
@@ -802,8 +1098,7 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                 }
                 
                 item {
-                    var isGlassmorphism by remember { mutableStateOf(com.example.util.PreferencesManager.isGlassmorphismEnabled(context)) }
-                    Row(
+                                        Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
@@ -819,7 +1114,6 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                         androidx.compose.material3.Switch(
                             checked = isGlassmorphism,
                             onCheckedChange = {
-                                isGlassmorphism = it
                                 com.example.util.PreferencesManager.setGlassmorphismEnabled(context, it)
                             }
                         )
@@ -877,9 +1171,10 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
 @Composable
 fun DownloadsScreen(onBackClick: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
     val db = remember { AppDatabase.getDatabase(context) }
     val savedVideos by db.savedVideoDao().getAllSavedVideos().collectAsStateWithLifecycle(initialValue = emptyList())
-    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val activeDownloads by com.example.util.RealDownloadManager.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
 
     Box(
         modifier = Modifier
@@ -976,6 +1271,7 @@ fun NetflipWebView(
     fullScreenHelper: com.example.util.FullScreenHelper? = null,
     modifier: Modifier = Modifier
 ) {
+    val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
     AndroidView(
         factory = { context ->
             val swipeRefreshLayout = SwipeRefreshLayout(context)
@@ -1123,12 +1419,12 @@ fun NetflipWebView(
                                 
                                 // --- Video Enhancement ---
                                 const enhanceStyle = document.createElement("style");
-                                enhanceStyle.textContent = `
-                                    video {
-                                        ${if (isSmartEnhance) "filter: contrast(1.15) saturate(1.2) brightness(1.05) drop-shadow(0 0 5px rgba(255,255,255,0.2)) !important;" else ""}
-                                        ${if (isHdr) "filter: contrast(1.25) saturate(1.3) brightness(1.15) !important;" else ""}
-                                    }
-                                `;
+                                let filterString = "";
+                                ${if (isSmartEnhance && isHdr) "filterString = 'contrast(1.4) saturate(1.5) brightness(1.2) drop-shadow(0 0 5px rgba(255,255,255,0.2)) !important;';" else if (isSmartEnhance) "filterString = 'contrast(1.15) saturate(1.2) brightness(1.05) drop-shadow(0 0 5px rgba(255,255,255,0.2)) !important;';" else if (isHdr) "filterString = 'contrast(1.25) saturate(1.3) brightness(1.15) !important;';" else ""}
+                                if (filterString) {
+                                    enhanceStyle.textContent = `video { filter: ${'$'}{filterString} }`;
+                                }
+
                                 document.head.appendChild(enhanceStyle);
 
                                 // --- Hide ad elements via CSS ---

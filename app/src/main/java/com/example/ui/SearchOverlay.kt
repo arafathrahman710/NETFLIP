@@ -33,6 +33,7 @@ import com.example.ui.theme.NetflixDark
 import com.example.ui.theme.NetflixDarker
 import com.example.ui.theme.NetflixGrayText
 import com.example.ui.theme.NetflixRed
+import com.example.ui.theme.glassmorphism
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -45,10 +46,12 @@ fun SearchOverlay(onSearch: (String) -> Unit) {
     val searchHistory by db.searchHistoryDao().getRecentSearches().collectAsStateWithLifecycle(initialValue = emptyList())
     var showHistory by remember { mutableStateOf(true) }
 
+    val isGlassmorphism = com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false).value
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(NetflixDark)
+            .background(if (isGlassmorphism) Color.Transparent else NetflixDark)
+            .glassmorphism(isGlassmorphism)
     ) {
         Box(
             modifier = Modifier
@@ -115,7 +118,7 @@ fun SearchOverlay(onSearch: (String) -> Unit) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(NetflixDarker)
+                    .background(if (isGlassmorphism) Color.Transparent else NetflixDarker)
             ) {
                 items(searchHistory) { history ->
                     Row(
