@@ -28,6 +28,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +44,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
@@ -51,6 +53,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
@@ -167,6 +170,7 @@ fun MainScreen() {
     var isLoading by remember { mutableStateOf(true) }
     var canGoBack by remember { mutableStateOf(false) }
     var showDownloadDialog by remember { mutableStateOf(false) }
+    var showNotificationsDialog by remember { mutableStateOf(false) }
     var downloadIsSeries by remember { mutableStateOf(false) }
 
     var currentUrl by remember { mutableStateOf("") }
@@ -179,10 +183,18 @@ fun MainScreen() {
             fullScreenHelper?.hideCustomView()
         } else if (selectedTab != 0) {
             selectedTab = 0
-        } else if (webViewRef?.canGoBack() == true) {
-            webViewRef?.goBack()
         } else {
-            activity?.finish()
+            webViewRef?.evaluateJavascript(
+                "(function() { if (window.location.pathname !== \"/\" && window.location.pathname !== \"\") { window.history.back(); return \"true\"; } else { return \"false\"; } })();"
+            ) { result ->
+                if (result == "\"false\"") {
+                    if (webViewRef?.canGoBack() == true) {
+                        webViewRef?.goBack()
+                    } else {
+                        activity?.finish()
+                    }
+                }
+            }
         }
     }
 
@@ -222,7 +234,7 @@ fun MainScreen() {
                 
                 // Top header for Home
                 if (selectedTab == 0) {
-                    HomeHeader(onProfileClick = { selectedTab = 3 })
+                    HomeHeader(onProfileClick = { selectedTab = 3 }, onNotificationsClick = { showNotificationsDialog = true })
                 }
                 
                 // Loading Overlay for WebView
@@ -280,7 +292,7 @@ fun MainScreen() {
                         Box(modifier = Modifier.fillMaxSize()) {
                             val isMovieOrSeries = currentUrl.contains("movie") || currentUrl.contains("series") || currentUrl.contains("tv") || currentUrl.contains("episode") || currentUrl.contains("watch") || currentUrl.contains("netflip.com/title")
                             if (isMovieOrSeries) {
-                                // Add a Floating Action Button to simulate saving a video on Home/Search tab
+                                // Add Floating Action Buttons for Watchlist, Favourite, and Download
                                 Row(
                                     modifier = Modifier
                                         .align(Alignment.BottomEnd)
@@ -291,7 +303,7 @@ fun MainScreen() {
                                     FloatingActionButton(
                                         onClick = {
                                             webViewRef?.let { wv ->
-                                                val title = wv.title ?: "Unknown Video"
+                                                val title = wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video"
                                                 val url = wv.url ?: ""
                                                 if (url.isNotEmpty()) {
                                                     CoroutineScope(Dispatchers.IO).launch {
@@ -304,30 +316,34 @@ fun MainScreen() {
                                         },
                                         containerColor = Color.DarkGray,
                                     ) {
-                                        Icon(Icons.Default.Favorite, contentDescription = "Add to Watchlist", tint = Color.White)
+                                        Icon(androidx.compose.material.icons.Icons.Default.Add, contentDescription = "Add to Watchlist", tint = Color.White)
+                                    }
+
+                                    FloatingActionButton(
+                                        onClick = {
+                                            webViewRef?.let { wv ->
+                                                val title = wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video"
+                                                val url = wv.url ?: ""
+                                                if (url.isNotEmpty()) {
+                                                    CoroutineScope(Dispatchers.IO).launch {
+                                                        val db = AppDatabase.getDatabase(wv.context)
+                                                        db.favouriteVideoDao().insertFavourite(com.example.data.FavouriteVideo(title = title, url = url))
+                                                    }
+                                                    android.widget.Toast.makeText(wv.context, "Added to Favourites", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        },
+                                        containerColor = Color.DarkGray,
+                                    ) {
+                                        Icon(Icons.Default.Favorite, contentDescription = "Add to Favourites", tint = NetflixRed)
                                     }
                                     
                                     FloatingActionButton(
                                         onClick = {
                                             webViewRef?.let { wv ->
                                                 val url = wv.url ?: ""
-                                                if (url.contains("series") || url.contains("tv")) {
-                                                    downloadIsSeries = true
-                                                    showDownloadDialog = true
-                                                } else if (url.contains("movie") || url.contains("episode") || url.contains("video")) {
-                                                    downloadIsSeries = false
-                                                    showDownloadDialog = true
-                                                } else {
-                                                    // Fallback just save it
-                                                    val title = wv.title ?: "Unknown Video"
-                                                    if (url.isNotEmpty()) {
-                                                        CoroutineScope(Dispatchers.IO).launch {
-                                                            val db = AppDatabase.getDatabase(wv.context)
-                                                            db.savedVideoDao().insertVideo(SavedVideo(title = title, url = url))
-                                                        }
-                                                        android.widget.Toast.makeText(wv.context, "Added to Downloads", android.widget.Toast.LENGTH_SHORT).show()
-                                                    }
-                                                }
+                                                // Trigger fake download simulation
+                                                com.example.util.DownloadSimulationManager.startDownload(wv.context, wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video", url)
                                             }
                                         },
                                         containerColor = NetflixRed,
@@ -343,6 +359,42 @@ fun MainScreen() {
                 }
             }
             
+            if (showNotificationsDialog) {
+                androidx.compose.ui.window.Dialog(onDismissRequest = { showNotificationsDialog = false }) {
+                    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(NetflixDarker, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .padding(16.dp)
+                    ) {
+                        Column {
+                            Text("Notifications", color = Color.White, fontSize = 20.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            if (activeDownloads.isEmpty()) {
+                                Text("No active downloads or notifications.", color = Color.Gray)
+                            } else {
+                                androidx.compose.foundation.lazy.LazyColumn {
+                                    items(activeDownloads) { download ->
+                                        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                                            Text(download.title, color = Color.White, maxLines = 1)
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            androidx.compose.material3.LinearProgressIndicator(
+                                                progress = { download.progress },
+                                                modifier = Modifier.fillMaxWidth().height(4.dp),
+                                                color = NetflixRed,
+                                                trackColor = Color.DarkGray
+                                            )
+                                            Text("${(download.progress * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if (showDownloadDialog) {
                 AlertDialog(
                     onDismissRequest = { showDownloadDialog = false },
@@ -355,7 +407,7 @@ fun MainScreen() {
                         TextButton(
                             onClick = {
                                 webViewRef?.let { wv ->
-                                    val title = wv.title ?: "Unknown Video"
+                                    val title = wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video"
                                     val url = wv.url ?: ""
                                     CoroutineScope(Dispatchers.IO).launch {
                                         val db = AppDatabase.getDatabase(wv.context)
@@ -374,7 +426,7 @@ fun MainScreen() {
                             TextButton(
                                 onClick = {
                                     webViewRef?.let { wv ->
-                                        val title = wv.title ?: "Unknown Video"
+                                        val title = wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video"
                                         val url = wv.url ?: ""
                                         CoroutineScope(Dispatchers.IO).launch {
                                             val db = AppDatabase.getDatabase(wv.context)
@@ -403,23 +455,53 @@ fun MainScreen() {
 }
 
 @Composable
-fun HomeHeader(onProfileClick: () -> Unit) {
+fun HomeHeader(onProfileClick: () -> Unit, onNotificationsClick: () -> Unit) {
+    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
             .background(Color.Transparent)
             .padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.End,
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        androidx.compose.material3.IconButton(onClick = onProfileClick, modifier = Modifier.size(32.dp)) {
-            Icon(
-                imageVector = Icons.Default.Person,
-                contentDescription = "Profile",
-                tint = Color.White,
-                modifier = Modifier.fillMaxSize()
-            )
+        Text(
+            text = "NETFLIP",
+            color = NetflixRed,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Black,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif,
+            letterSpacing = (-1).sp
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                androidx.compose.material3.IconButton(onClick = onNotificationsClick, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.Notifications,
+                        contentDescription = "Notifications",
+                        tint = Color.White,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                if (activeDownloads.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(10.dp)
+                            .background(NetflixRed, androidx.compose.foundation.shape.CircleShape)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            androidx.compose.material3.IconButton(onClick = onProfileClick, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = "Profile",
+                    tint = Color.White,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     }
 }
@@ -431,6 +513,24 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val db = remember { AppDatabase.getDatabase(context) }
     val watchlistVideos by db.watchlistDao().getAllWatchlistVideos().collectAsStateWithLifecycle(initialValue = emptyList())
+    val favouriteVideos by db.favouriteVideoDao().getAllFavourites().collectAsStateWithLifecycle(initialValue = emptyList())
+    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
+
+
+    var smartEnhance by remember { mutableStateOf(com.example.util.PreferencesManager.isSmartEnhanceEnabled(context)) }
+    var hdrEnabled by remember { mutableStateOf(com.example.util.PreferencesManager.isHdrEnabled(context)) }
+    var dolbyVision by remember { mutableStateOf(com.example.util.PreferencesManager.isDolbyVisionEnabled(context)) }
+
+    fun checkHdrSupport(type: Int): Boolean {
+        val display = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            context.display
+        } else {
+            @Suppress("DEPRECATION")
+            (context.getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay
+        }
+        val capabilities = display?.hdrCapabilities?.supportedHdrTypes ?: intArrayOf()
+        return if (type == -1) capabilities.isNotEmpty() else capabilities.contains(type)
+    }
 
     Box(
         modifier = Modifier
@@ -439,8 +539,13 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
             .padding(16.dp)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-            Spacer(modifier = Modifier.height(32.dp))
-            Text("My Profile", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Spacer(modifier = Modifier.width(48.dp))
+                Text("My Profile", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Box {
+                    
+                }
+            }
             Spacer(modifier = Modifier.height(32.dp))
             Box(
                 modifier = Modifier
@@ -474,20 +579,42 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
             
             Spacer(modifier = Modifier.height(24.dp))
             
-            Text("My Watchlist", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Start))
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            if (watchlistVideos.isEmpty()) {
-                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text("Your watchlist is empty", color = NetflixGrayText)
+            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                if (activeDownloads.isNotEmpty()) {
+                    item {
+                        Text("Active Downloads", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                    }
+                    items(activeDownloads) { download ->
+                        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).background(NetflixDarker, RoundedCornerShape(8.dp)).padding(16.dp)) {
+                            Text(download.title, color = Color.White, maxLines = 1)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            androidx.compose.material3.LinearProgressIndicator(
+                                progress = { download.progress },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = NetflixRed,
+                                trackColor = Color.DarkGray
+                            )
+                        }
+                    }
+                    item { Spacer(modifier = Modifier.height(16.dp)) }
                 }
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+
+                item {
+                    Text("My Watchlist", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                }
+                
+                if (watchlistVideos.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
+                            Text("Your watchlist is empty", color = NetflixGrayText)
+                        }
+                    }
+                } else {
                     items(watchlistVideos) { video ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 8.dp)
+                                .padding(vertical = 4.dp)
                                 .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                                 .padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -496,7 +623,7 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                             Spacer(modifier = Modifier.width(16.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(video.title.takeIf { it.isNotBlank() } ?: "Unknown Title", color = Color.White, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                                Text(video.url, color = NetflixGrayText, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text(video.url.replace("stream.terousd.online", "netflip.com"), color = NetflixGrayText, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             androidx.compose.material3.IconButton(
@@ -511,8 +638,237 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                         }
                     }
                 }
+
+                item { Spacer(modifier = Modifier.height(24.dp)) }
+                
+                item {
+                    Text("Video Playback", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                }
+                
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Smart Enhance", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Enhances video contrast and brightness", color = NetflixGrayText, fontSize = 12.sp)
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = smartEnhance,
+                            onCheckedChange = {
+                                smartEnhance = it
+                                com.example.util.PreferencesManager.setSmartEnhanceEnabled(context, it)
+                                if (it) {
+                                    hdrEnabled = false
+                                    dolbyVision = false
+                                }
+                            }
+                        )
+                    }
+                }
+                
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("HDR Simulation", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Simulates High Dynamic Range colors", color = NetflixGrayText, fontSize = 12.sp)
+                            if (!checkHdrSupport(-1)) {
+                                Text("Not natively supported on this device", color = NetflixRed, fontSize = 10.sp)
+                            }
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = hdrEnabled,
+                            onCheckedChange = {
+                                hdrEnabled = it
+                                com.example.util.PreferencesManager.setHdrEnabled(context, it)
+                                if (it) {
+                                    smartEnhance = false
+                                    dolbyVision = false
+                                }
+                            }
+                        )
+                    }
+                }
+                
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Dolby Vision", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Enable Dolby Vision color profile", color = NetflixGrayText, fontSize = 12.sp)
+                            if (!checkHdrSupport(android.view.Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION)) {
+                                Text("Not natively supported on this device", color = NetflixRed, fontSize = 10.sp)
+                            }
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = dolbyVision,
+                            onCheckedChange = {
+                                dolbyVision = it
+                                com.example.util.PreferencesManager.setDolbyVisionEnabled(context, it)
+                                if (it) {
+                                    smartEnhance = false
+                                    hdrEnabled = false
+                                }
+                            }
+                        )
+                    }
+                }
+                
+                item {
+                    var showSpeedTest by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(16.dp)
+                            .clickable { showSpeedTest = true },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Internet Speed", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Test your connection speed via fast.com", color = NetflixGrayText, fontSize = 12.sp)
+                        }
+                        Icon(androidx.compose.material.icons.Icons.Default.PlayArrow, contentDescription = "Test Speed", tint = Color.White)
+                    }
+
+                    if (showSpeedTest) {
+                        androidx.compose.ui.window.Dialog(onDismissRequest = { showSpeedTest = false }) {
+                            Box(modifier = Modifier
+                                .fillMaxWidth()
+                                .height(400.dp)
+                                .background(NetflixDarker, RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(16.dp))
+                            ) {
+                                AndroidView(factory = { ctx ->
+                                    android.webkit.WebView(ctx).apply {
+                                        layoutParams = android.view.ViewGroup.LayoutParams(
+                                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                        )
+                                        settings.apply {
+                                            javaScriptEnabled = true
+                                            domStorageEnabled = true
+                                            useWideViewPort = true
+                                            loadWithOverviewMode = true
+                                            databaseEnabled = true
+                                            userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                                        }
+                                        webViewClient = android.webkit.WebViewClient()
+                                        loadUrl("https://fast.com")
+                                    }
+                                }, modifier = Modifier.fillMaxSize())
+                                
+                                androidx.compose.material3.IconButton(
+                                    onClick = { showSpeedTest = false },
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(8.dp)
+                                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                ) {
+                                    Icon(androidx.compose.material.icons.Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                item { Spacer(modifier = Modifier.height(24.dp)) }
+                
+                item {
+                    Text("Appearance", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                }
+                
+                item {
+                    var isGlassmorphism by remember { mutableStateOf(com.example.util.PreferencesManager.isGlassmorphismEnabled(context)) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Glassmorphism UI", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Enable frosted glass effect on Cards and Modals", color = NetflixGrayText, fontSize = 12.sp)
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = isGlassmorphism,
+                            onCheckedChange = {
+                                isGlassmorphism = it
+                                com.example.util.PreferencesManager.setGlassmorphismEnabled(context, it)
+                            }
+                        )
+                    }
+                }
+                
+                item { Spacer(modifier = Modifier.height(24.dp)) }
+                
+                item {
+                    Text("Favourite", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 16.dp))
+                }
+                
+                if (favouriteVideos.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
+                            Text("No favourites yet", color = NetflixGrayText)
+                        }
+                    }
+                } else {
+                    items(favouriteVideos) { video ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Favorite, contentDescription = null, tint = NetflixRed)
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(video.title.takeIf { it.isNotBlank() } ?: "Unknown Title", color = Color.White, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text(video.url.replace("stream.terousd.online", "netflip.com"), color = NetflixGrayText, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            androidx.compose.material3.IconButton(
+                                onClick = {
+                                    CoroutineScope(Dispatchers.IO).launch {
+                                        db.favouriteVideoDao().deleteFavourite(video.url)
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = NetflixRed)
+                            }
+                        }
+                    }
+                }
             }
-            
+                        
             Spacer(modifier = Modifier.height(64.dp))
         }
     }
@@ -523,12 +879,12 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val db = remember { AppDatabase.getDatabase(context) }
     val savedVideos by db.savedVideoDao().getAllSavedVideos().collectAsStateWithLifecycle(initialValue = emptyList())
+    val activeDownloads by com.example.util.DownloadSimulationManager.activeDownloads.collectAsStateWithLifecycle(initialValue = emptyList())
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(NetflixDark),
-        contentAlignment = if (savedVideos.isEmpty()) Alignment.Center else Alignment.TopStart
+            .background(NetflixDark)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
@@ -547,23 +903,49 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
                 )
             }
             
-            if (savedVideos.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.Download,
-                            contentDescription = null,
-                            tint = NetflixGrayText,
-                            modifier = Modifier.size(80.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("No downloads yet", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Movies and shows you download will appear here.", color = NetflixGrayText, fontSize = 14.sp)
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                if (activeDownloads.isNotEmpty()) {
+                    item {
+                        Text("Downloading...", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
                     }
+                    items(activeDownloads) { download ->
+                        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).background(NetflixDarker, RoundedCornerShape(8.dp)).padding(16.dp)) {
+                            Text(download.title, color = Color.White, maxLines = 1)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            androidx.compose.material3.LinearProgressIndicator(
+                                progress = { download.progress },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = NetflixRed,
+                                trackColor = Color.DarkGray
+                            )
+                        }
+                    }
+                    item { Spacer(modifier = Modifier.height(16.dp)) }
                 }
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
+
+                if (savedVideos.isEmpty() && activeDownloads.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = null,
+                                    tint = NetflixGrayText,
+                                    modifier = Modifier.size(80.dp)
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text("No downloads yet", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Movies and shows you download will appear here.", color = NetflixGrayText, fontSize = 14.sp)
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        if (savedVideos.isNotEmpty()) {
+                            Text("Completed", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
+                        }
+                    }
                     items(savedVideos) { video ->
                         Row(
                             modifier = Modifier
@@ -575,9 +957,8 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(video.title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text(video.url, color = NetflixGrayText, fontSize = 12.sp, maxLines = 1)
+                                Text(video.url.replace("stream.terousd.online", "netflip.com"), color = NetflixGrayText, fontSize = 12.sp, maxLines = 1)
                             }
-                            // Delete button could go here
                         }
                     }
                 }
@@ -586,7 +967,6 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun NetflipWebView(
     onWebViewCreated: (WebView) -> Unit,
@@ -726,8 +1106,31 @@ fun NetflipWebView(
                         onNavigationStateChanged(view?.canGoBack() == true)
                         url?.let { onUrlChanged(it) }
                         
+
+                        val isSmartEnhance = com.example.util.PreferencesManager.isSmartEnhanceEnabled(context)
+                        val isHdr = com.example.util.PreferencesManager.isHdrEnabled(context) || com.example.util.PreferencesManager.isDolbyVisionEnabled(context)
+                        val isGlassmorphism = com.example.util.PreferencesManager.isGlassmorphismEnabled(context)
+                        
                         val jsCode = """
                             (function() {
+                                // --- Glassmorphism UI ---
+                                ${if (isGlassmorphism) "const glassStyle = document.createElement('style'); glassStyle.textContent = `.card, .modal, .bottom-sheet, .drawer, [class*=\"card\"], [class*=\"modal\"], [class*=\"sheet\"], [class*=\"drawer\"], [class*=\"dialog\"], [class*=\"menu\"], .dropdown, [class*=\"dropdown\"], .trailer-modal-inner, .search-results-container, .mobile-search-overlay { background: rgba(255, 255, 255, 0.15) !important; backdrop-filter: blur(20px) !important; -webkit-backdrop-filter: blur(20px) !important; border: 1px solid rgba(255, 255, 255, 0.25) !important; box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1) !important; }`; document.head.appendChild(glassStyle);" else ""}
+                                
+                                // --- Quick Logo Hide ---
+                                const logoStyle = document.createElement("style");
+                                logoStyle.textContent = ".navbar-brand, [class*=\"logo\"] { visibility: hidden !important; }";
+                                document.head.appendChild(logoStyle);
+                                
+                                // --- Video Enhancement ---
+                                const enhanceStyle = document.createElement("style");
+                                enhanceStyle.textContent = `
+                                    video {
+                                        ${if (isSmartEnhance) "filter: contrast(1.15) saturate(1.2) brightness(1.05) drop-shadow(0 0 5px rgba(255,255,255,0.2)) !important;" else ""}
+                                        ${if (isHdr) "filter: contrast(1.25) saturate(1.3) brightness(1.15) !important;" else ""}
+                                    }
+                                `;
+                                document.head.appendChild(enhanceStyle);
+
                                 // --- Hide ad elements via CSS ---
                                 const style = document.createElement('style');
                                 style.textContent = `
@@ -764,26 +1167,38 @@ fun NetflipWebView(
                                 }, true);
 
                                 // --- Continuously remove dynamically injected ad elements ---
-                                setInterval(function() {
-                                  document.querySelectorAll(
-                                    'iframe[src*="ad"], .adsbygoogle, [id*="ad-slot"], [class*="ad-unit"], .vast-ad, .video-ad-overlay'
-                                  ).forEach(el => el.remove());
-                                  
-                                  const replaceText = () => {
-                                      const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                                      let node;
-                                      while(node = walk.nextNode()) {
-                                          if(node.nodeValue.match(/Terousd/i)) {
-                                              node.nodeValue = node.nodeValue.replace(/Terousd/gi, 'NETFLIP');
-                                          }
-                                      }
-                                  };
-                                  replaceText();
-                                }, 500);
+                                // --- Hide the app logo via CSS if possible ---
+                                const webHeaderStyle = document.createElement('style');
+                                webHeaderStyle.innerHTML = 'img[alt*=\"terousd\" i], .header-icon-btn, .theme-switcher-btn, .mobile-search-btn, .header-search, .theme-switcher, .theme-toggle, .three-dot-menu-container { display: none !important; }';
+                                document.head.appendChild(webHeaderStyle);
+
+                                const replaceText = () => {
+                                    if (document.title.match(/Terousd|terousd/i)) { document.title = "NETFLIP"; }
+                                    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                                    let node;
+                                    while(node = walk.nextNode()) {
+                                        if(node.nodeValue.match(/Terousd/gi)) {
+                                            node.nodeValue = node.nodeValue.replace(/Terousd/gi, "NETFLIP");
+                                        }
+                                    }
+                                    document.querySelectorAll('*').forEach(el => {
+                                        if(el.placeholder && el.placeholder.match(/Terousd/i)) {
+                                            el.placeholder = el.placeholder.replace(/Terousd/gi, "NETFLIP");
+                                        }
+                                        if(el.title && el.title.match(/Terousd/i)) {
+                                            el.title = el.title.replace(/Terousd/gi, "NETFLIP");
+                                        }
+                                        if(el.getAttribute('aria-label') && el.getAttribute('aria-label').match(/Terousd/i)) {
+                                            el.setAttribute('aria-label', el.getAttribute('aria-label').replace(/Terousd/gi, "NETFLIP"));
+                                        }
+                                    });
+                                };
+                                replaceText();
 
                                 // --- MutationObserver for ads added after page load ---
                                 const adSelectors = ['iframe[src*="ad"]', '.adsbygoogle', '[id*="ad-slot"]', '[class*="ad-unit"]'];
-                                const observer = new MutationObserver(function() {
+                                const observer = new MutationObserver(function(mutations) {
+                                  replaceText();
                                   adSelectors.forEach(sel => {
                                     document.querySelectorAll(sel).forEach(el => el.remove());
                                   });
@@ -797,7 +1212,7 @@ fun NetflipWebView(
                                       }
                                   });
                                 });
-                                observer.observe(document.body, { childList: true, subtree: true });
+                                observer.observe(document.body, { childList: true, subtree: true, characterData: true });
                             })();
                         """.trimIndent()
                         
