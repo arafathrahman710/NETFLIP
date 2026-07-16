@@ -1,0 +1,43 @@
+--- app/src/main/java/com/example/MainActivity.kt
++++ app/src/main/java/com/example/MainActivity.kt
+@@ -176,33 +176,6 @@
+         }
+     }
+     
+-    Scaffold(
+-        bottomBar = {
+-            NavigationBar(
+-                containerColor = NetflixDarker.copy(alpha = 0.9f),
+-                contentColor = Color.White,
+-                modifier = Modifier.height(72.dp)
+-            ) {
+-                val tabs = listOf(
+-                    Icons.Default.Home to "Home",
+-                    Icons.Default.Search to "Search",
+-                    Icons.Default.Download to "Downloads",
+-                    Icons.Default.Person to "Watchlist"
+-                )
+-                
+-                tabs.forEachIndexed { index, (icon, label) ->
+-                    NavigationBarItem(
+-                        selected = selectedTab == index,
+-                        onClick = { selectedTab = index },
+-                        icon = { Icon(icon, contentDescription = label) },
+-                        colors = NavigationBarItemDefaults.colors(
+-                            selectedIconColor = Color.White,
+-                            unselectedIconColor = NetflixGrayText,
+-                            indicatorColor = Color.Transparent
+-                        )
+-                    )
+-                }
+-            }
+-        }
+-    ) { paddingValues ->
++    Scaffold { paddingValues ->
+         Box(
+             modifier = Modifier
+@@ -216,3 +189,3 @@
+                 if (selectedTab == 0) {
+-                    HomeHeader()
++                    HomeHeader(onProfileClick = { selectedTab = 3 })
+                 }

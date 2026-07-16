@@ -18,6 +18,11 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -31,12 +36,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -46,6 +56,11 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -74,6 +89,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppDatabase
 import com.example.data.SavedVideo
+import com.example.data.WatchlistVideo
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.NetflixDark
 import com.example.ui.theme.NetflixDarker
@@ -150,44 +166,23 @@ fun MainScreen() {
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var canGoBack by remember { mutableStateOf(false) }
+    var showDownloadDialog by remember { mutableStateOf(false) }
+    var downloadIsSeries by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = selectedTab != 0 || canGoBack) {
+    var currentUrl by remember { mutableStateOf("") }
+    
+    val activity = androidx.compose.ui.platform.LocalContext.current as? ComponentActivity
+    BackHandler(enabled = true) {
         if (selectedTab != 0) {
             selectedTab = 0
-        } else if (canGoBack) {
+        } else if (webViewRef?.canGoBack() == true) {
             webViewRef?.goBack()
+        } else {
+            activity?.finish()
         }
     }
-    
-    Scaffold(
-        bottomBar = {
-            NavigationBar(
-                containerColor = NetflixDarker.copy(alpha = 0.9f),
-                contentColor = Color.White,
-                modifier = Modifier.height(72.dp)
-            ) {
-                val tabs = listOf(
-                    Icons.Default.Home to "Home",
-                    Icons.Default.Search to "Search",
-                    Icons.Default.Download to "Downloads",
-                    Icons.Default.Person to "Profile"
-                )
-                
-                tabs.forEachIndexed { index, (icon, label) ->
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        icon = { Icon(icon, contentDescription = label) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Color.White,
-                            unselectedIconColor = NetflixGrayText,
-                            indicatorColor = Color.Transparent
-                        )
-                    )
-                }
-            }
-        }
-    ) { paddingValues ->
+
+    Scaffold { paddingValues ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -200,28 +195,29 @@ fun MainScreen() {
                     .fillMaxSize()
                     .align(Alignment.TopCenter)
             ) {
-                // Top header for Home
-                if (selectedTab == 0) {
-                    HomeHeader()
-                }
-
                 // The Web Content
                 Box(modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = if (selectedTab == 0) 56.dp else if (selectedTab == 1) 72.dp else 0.dp)
+                    .padding(top = if (selectedTab == 1) 72.dp else 0.dp)
                 ) {
-                    TerousdWebView(
+                    NetflipWebView(
                         onWebViewCreated = { webViewRef = it },
                         onLoadingStateChanged = { isLoading = it },
                         onNavigationStateChanged = { canGoBack = it },
+                        onUrlChanged = { currentUrl = it },
                         modifier = Modifier.fillMaxSize().let {
                             if (selectedTab > 1) it.background(NetflixDark) else it
                         }
                     )
                     
-                    if (selectedTab > 1) {
+                    if (selectedTab > 1) { 
                          Box(modifier = Modifier.fillMaxSize().background(NetflixDark))
                     }
+                }
+                
+                // Top header for Home
+                if (selectedTab == 0) {
+                    HomeHeader(onProfileClick = { selectedTab = 3 })
                 }
                 
                 // Loading Overlay for WebView
@@ -229,17 +225,25 @@ fun MainScreen() {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(NetflixDark),
-                        contentAlignment = Alignment.Center
+                            .background(NetflixDark)
                     ) {
-                        CircularProgressIndicator(color = NetflixRed)
+                        SkeletonLoader()
+                    }
+                }
+            }
+
+            LaunchedEffect(isLoading) {
+                if (isLoading) {
+                    delay(3000)
+                    if (isLoading) {
+                        webViewRef?.reload()
                     }
                 }
             }
 
             // Search Bar Overlay
             if (selectedTab == 1) {
-                SearchBar(
+                com.example.ui.SearchOverlay(
                     onSearch = { query ->
                         val js = """
                             const searchInput = document.querySelector('input[type="search"]') || document.querySelector('input[placeholder*="Search"]');
@@ -269,143 +273,248 @@ fun MainScreen() {
                     0, 1 -> {
                         // Empty box because WebView is behind
                         Box(modifier = Modifier.fillMaxSize()) {
-                            // Add a Floating Action Button to simulate saving a video on Home tab
-                            if (targetTab == 0) {
-                                FloatingActionButton(
-                                    onClick = {
-                                        webViewRef?.let { wv ->
-                                            val title = wv.title ?: "Unknown Video"
-                                            val url = wv.url ?: ""
-                                            if (url.isNotEmpty()) {
-                                                CoroutineScope(Dispatchers.IO).launch {
-                                                    val db = AppDatabase.getDatabase(wv.context)
-                                                    db.savedVideoDao().insertVideo(SavedVideo(title = title, url = url))
-                                                }
-                                            }
-                                        }
-                                    },
-                                    containerColor = NetflixRed,
+                            val isMovieOrSeries = currentUrl.contains("movie") || currentUrl.contains("series") || currentUrl.contains("tv") || currentUrl.contains("episode") || currentUrl.contains("watch") || currentUrl.contains("netflip.com/title")
+                            if (isMovieOrSeries) {
+                                // Add a Floating Action Button to simulate saving a video on Home/Search tab
+                                Row(
                                     modifier = Modifier
                                         .align(Alignment.BottomEnd)
                                         .padding(24.dp)
-                                        .padding(bottom = 72.dp) // above bottom bar
+                                        .padding(bottom = 72.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                                 ) {
-                                    Icon(Icons.Default.Add, contentDescription = "Save Page")
+                                    FloatingActionButton(
+                                        onClick = {
+                                            webViewRef?.let { wv ->
+                                                val title = wv.title ?: "Unknown Video"
+                                                val url = wv.url ?: ""
+                                                if (url.isNotEmpty()) {
+                                                    CoroutineScope(Dispatchers.IO).launch {
+                                                        val db = AppDatabase.getDatabase(wv.context)
+                                                        db.watchlistDao().insertVideo(WatchlistVideo(title = title, url = url))
+                                                    }
+                                                    android.widget.Toast.makeText(wv.context, "Added to Watchlist", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        },
+                                        containerColor = Color.DarkGray,
+                                    ) {
+                                        Icon(Icons.Default.Favorite, contentDescription = "Add to Watchlist", tint = Color.White)
+                                    }
+                                    
+                                    FloatingActionButton(
+                                        onClick = {
+                                            webViewRef?.let { wv ->
+                                                val url = wv.url ?: ""
+                                                if (url.contains("series") || url.contains("tv")) {
+                                                    downloadIsSeries = true
+                                                    showDownloadDialog = true
+                                                } else if (url.contains("movie") || url.contains("episode") || url.contains("video")) {
+                                                    downloadIsSeries = false
+                                                    showDownloadDialog = true
+                                                } else {
+                                                    // Fallback just save it
+                                                    val title = wv.title ?: "Unknown Video"
+                                                    if (url.isNotEmpty()) {
+                                                        CoroutineScope(Dispatchers.IO).launch {
+                                                            val db = AppDatabase.getDatabase(wv.context)
+                                                            db.savedVideoDao().insertVideo(SavedVideo(title = title, url = url))
+                                                        }
+                                                        android.widget.Toast.makeText(wv.context, "Added to Downloads", android.widget.Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        containerColor = NetflixRed,
+                                    ) {
+                                        Icon(Icons.Default.Download, contentDescription = "Download Video", tint = Color.White)
+                                    }
                                 }
                             }
                         }
                     }
-                    2 -> DownloadsScreen()
-                    3 -> ProfileScreen()
+                    2 -> DownloadsScreen(onBackClick = { selectedTab = 0 })
+                    3 -> ProfileScreen(onHomeClick = { selectedTab = 0 }, onDownloadClick = { selectedTab = 2 })
                 }
+            }
+            
+            if (showDownloadDialog) {
+                AlertDialog(
+                    onDismissRequest = { showDownloadDialog = false },
+                    title = { Text(if (downloadIsSeries) "Download Series" else "Download Movie") },
+                    text = { 
+                        Text(if (downloadIsSeries) "Would you like to download a single episode or the entire series?" 
+                             else "Would you like to download this movie for offline viewing?") 
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                webViewRef?.let { wv ->
+                                    val title = wv.title ?: "Unknown Video"
+                                    val url = wv.url ?: ""
+                                    CoroutineScope(Dispatchers.IO).launch {
+                                        val db = AppDatabase.getDatabase(wv.context)
+                                        db.savedVideoDao().insertVideo(SavedVideo(title = title, url = url))
+                                    }
+                                    android.widget.Toast.makeText(wv.context, "Download Started in Background...", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                                showDownloadDialog = false
+                            }
+                        ) {
+                            Text(if (downloadIsSeries) "Download Entire Series" else "Download", color = NetflixRed)
+                        }
+                    },
+                    dismissButton = {
+                        if (downloadIsSeries) {
+                            TextButton(
+                                onClick = {
+                                    webViewRef?.let { wv ->
+                                        val title = wv.title ?: "Unknown Video"
+                                        val url = wv.url ?: ""
+                                        CoroutineScope(Dispatchers.IO).launch {
+                                            val db = AppDatabase.getDatabase(wv.context)
+                                            db.savedVideoDao().insertVideo(SavedVideo(title = "$title (Episode)", url = url))
+                                        }
+                                        android.widget.Toast.makeText(wv.context, "Downloading Episode...", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                    showDownloadDialog = false
+                                }
+                            ) {
+                                Text("Single Episode", color = Color.White)
+                            }
+                        } else {
+                            TextButton(onClick = { showDownloadDialog = false }) {
+                                Text("Cancel", color = Color.White)
+                            }
+                        }
+                    },
+                    containerColor = NetflixDarker,
+                    titleContentColor = Color.White,
+                    textContentColor = NetflixGrayText
+                )
             }
         }
     }
 }
 
 @Composable
-fun HomeHeader() {
+fun HomeHeader(onProfileClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
             .background(Color.Transparent)
             .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "NETFLIP",
-            color = NetflixRed,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.weight(1f)
-        )
-        Icon(
-            imageVector = Icons.Default.Notifications,
-            contentDescription = "Notifications",
-            tint = Color.White,
-            modifier = Modifier.size(28.dp)
-        )
+        androidx.compose.material3.IconButton(onClick = onProfileClick, modifier = Modifier.size(32.dp)) {
+            Icon(
+                imageVector = Icons.Default.Person,
+                contentDescription = "Profile",
+                tint = Color.White,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 
-@Composable
-fun SearchBar(onSearch: (String) -> Unit) {
-    var query by remember { mutableStateOf("") }
-    
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(72.dp)
-            .background(NetflixDark)
-            .padding(16.dp)
-    ) {
-        BasicTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier
-                .fillMaxSize()
-                .background(NetflixDarker, CircleShape)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
-            cursorBrush = SolidColor(NetflixRed),
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(
-                onSearch = { onSearch(query) }
-            ),
-            decorationBox = { innerTextField ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = NetflixGrayText,
-                        modifier = Modifier.padding(end = 8.dp)
-                    )
-                    Box(Modifier.weight(1f)) {
-                        if (query.isEmpty()) {
-                            Text("Search movies, shows...", color = NetflixGrayText, fontSize = 16.sp)
-                        }
-                        innerTextField()
-                    }
-                }
-            }
-        )
-    }
-}
+
 
 @Composable
-fun ProfileScreen() {
+fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val db = remember { AppDatabase.getDatabase(context) }
+    val watchlistVideos by db.watchlistDao().getAllWatchlistVideos().collectAsStateWithLifecycle(initialValue = emptyList())
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(NetflixDark)
-            .padding(32.dp),
-        contentAlignment = Alignment.Center
+            .padding(16.dp)
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Who's Watching?", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Spacer(modifier = Modifier.height(32.dp))
+            Text("My Profile", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(32.dp))
             Box(
                 modifier = Modifier
-                    .size(100.dp)
+                    .size(80.dp)
                     .clip(CircleShape)
                     .background(Color.DarkGray),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Person, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(64.dp))
+                Icon(Icons.Default.Person, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(48.dp))
             }
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             Text("Guest", color = Color.White, fontSize = 18.sp)
             
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                TextButton(onClick = onHomeClick) {
+                    Icon(Icons.Default.Home, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Home", color = Color.White)
+                }
+                TextButton(onClick = onDownloadClick) {
+                    Icon(Icons.Default.Download, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Downloads", color = Color.White)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Text("My Watchlist", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Start))
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            if (watchlistVideos.isEmpty()) {
+                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    Text("Your watchlist is empty", color = NetflixGrayText)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    items(watchlistVideos) { video ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                                .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(video.title.takeIf { it.isNotBlank() } ?: "Unknown Title", color = Color.White, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text(video.url, color = NetflixGrayText, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            androidx.compose.material3.IconButton(
+                                onClick = {
+                                    CoroutineScope(Dispatchers.IO).launch {
+                                        db.watchlistDao().deleteVideoById(video.id)
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = NetflixRed)
+                            }
+                        }
+                    }
+                }
+            }
+            
             Spacer(modifier = Modifier.height(64.dp))
-            Text("App Version 1.0.0", color = NetflixGrayText, fontSize = 12.sp)
         }
     }
 }
 
 @Composable
-fun DownloadsScreen() {
+fun DownloadsScreen(onBackClick: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val db = remember { AppDatabase.getDatabase(context) }
     val savedVideos by db.savedVideoDao().getAllSavedVideos().collectAsStateWithLifecycle(initialValue = emptyList())
@@ -416,28 +525,39 @@ fun DownloadsScreen() {
             .background(NetflixDark),
         contentAlignment = if (savedVideos.isEmpty()) Alignment.Center else Alignment.TopStart
     ) {
-        if (savedVideos.isEmpty()) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = Icons.Default.Download,
-                    contentDescription = null,
-                    tint = NetflixGrayText,
-                    modifier = Modifier.size(80.dp)
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("No downloads yet", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Movies and shows you download will appear here.", color = NetflixGrayText, fontSize = 14.sp)
-            }
-        } else {
-            Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(16.dp)
+            ) {
+                androidx.compose.material3.IconButton(onClick = onBackClick) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                }
+                Spacer(modifier = Modifier.width(16.dp))
                 Text(
-                    text = "My List",
+                    text = "My Downloads",
                     color = Color.White,
                     fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(16.dp)
+                    fontWeight = FontWeight.Bold
                 )
+            }
+            
+            if (savedVideos.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = null,
+                            tint = NetflixGrayText,
+                            modifier = Modifier.size(80.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("No downloads yet", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Movies and shows you download will appear here.", color = NetflixGrayText, fontSize = 14.sp)
+                    }
+                }
+            } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(savedVideos) { video ->
                         Row(
@@ -463,10 +583,11 @@ fun DownloadsScreen() {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun TerousdWebView(
+fun NetflipWebView(
     onWebViewCreated: (WebView) -> Unit,
     onLoadingStateChanged: (Boolean) -> Unit,
     onNavigationStateChanged: (Boolean) -> Unit,
+    onUrlChanged: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     AndroidView(
@@ -523,19 +644,51 @@ fun TerousdWebView(
                     "googletagmanager.com", "hotjar.com", "mc.yandex.ru",
                     "pagead2.googlesyndication.com", "adnxs.com", "adsystem",
                     "popads.net", "popcash.net", "propellerads.com", "exoclick.com",
-                    "trafficjunky.net", "revenueads.net", "juicyads.com"
+                    "trafficjunky.net", "revenueads.net", "juicyads.com",
+                    "ad-delivery.net", "ad.yieldmanager.com", "adbrite.com",
+                    "adecn.com", "admob.com", "adtech.de", "adzerk.net",
+                    "affiliates.com", "bannertrack.net", "clicksor.com",
+                    "criteo.com", "falkag.net", "fastclick.net", "ibill.com",
+                    "infinitesimall.com", "linkexchange.com", "mediaplex.com",
+                    "scorecardresearch.com", "taboola.com", "outbrain.com",
+                    "bidswitch.net", "rubiconproject.com", "pubmatic.com",
+                    "openx.net", "casalemedia.com", "quantserve.com",
+                    "lijit.com", "sharethis.com", "yieldoptimizer.com",
+                    "adform.net", "mookie1.com", "tynt.com", "w55c.net",
+                    "exponential.com", "undertone.com", "zedo.com",
+                    "moatads.com", "imrworldwide.com", "krxd.net",
+                    "innovid.com", "spotxchange.com", "teads.tv",
+                    "adsterra.com", "a-ads.com", "onclickgate.com", "realsrv.com",
+                    "onclickmaha.com", "best-onclick.com", "realsrv.com", "adxpremium.click",
+                    "adxpansion.com", "bidgear.com", "hilltopads.net", "onclickadvert.com",
+                    "adtrue.com", "adk2x.com", "1xbet.com", "aliexpress.com", "awin1.com"
                 )
                 
                 val adBlockPaths = listOf(
-                    "/ads/", "/banner/", "/popup/", "/popunder/", "/adserv", "/adsense"
+                    "/ads/", "/banner/", "/popup/", "/popunder/", "/adserv", "/adsense",
+                    "/adscript/", "/banners/", "/tracking/", "/track/", "/affiliate/",
+                    "/pixel", "/analytics", "/pagead"
+                )
+                
+                val adBlockKeywords = listOf(
+                    "popunder", "adnetwork", "advertisement", "ad-script", "tracking",
+                    "banner_ad", "popads", "propeller", "adsterra", "exoclick",
+                    "1xbet", "aliexpress", "bet365", "melbet", "linebet"
                 )
 
                 webViewClient = object : WebViewClient() {
+                    override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                        super.doUpdateVisitedHistory(view, url, isReload)
+                        onNavigationStateChanged(view?.canGoBack() == true)
+                        url?.let { onUrlChanged(it) }
+                    }
+
                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                         super.onPageStarted(view, url, favicon)
                         onLoadingStateChanged(true)
                         swipeRefreshLayout.isRefreshing = true
                         onNavigationStateChanged(view?.canGoBack() == true)
+                        url?.let { onUrlChanged(it) }
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
@@ -543,9 +696,11 @@ fun TerousdWebView(
                         onLoadingStateChanged(false)
                         swipeRefreshLayout.isRefreshing = false
                         onNavigationStateChanged(view?.canGoBack() == true)
+                        url?.let { onUrlChanged(it) }
                         
-                        val cssBlocker = """
+                        val jsCode = """
                             (function() {
+                                // 1. CSS Blocker
                                 const style = document.createElement('style');
                                 style.textContent = `
                                     ins.adsbygoogle, .adsbygoogle,
@@ -553,45 +708,111 @@ fun TerousdWebView(
                                     .popup, .pop-up, .overlay-ad, .ad-overlay,
                                     .interstitial, [class*="interstitial"],
                                     script[src*="ads"], script[src*="doubleclick"],
-                                    .advertisement, [data-ad], [aria-label="advertisement"]
-                                    { display: none !important; visibility: hidden !important; opacity: 0 !important; height: 0 !important; }
+                                    .advertisement, [data-ad], [aria-label="advertisement"],
+                                    #ad-container, .video-ads, .ytp-ad-module, .ad-showing,
+                                    div[id^="ad_"], div[class^="ad_"],
+                                    iframe[src*="ads"], iframe[src*="doubleclick"], iframe[src*="popads"]
+                                    { display: none !important; visibility: hidden !important; opacity: 0 !important; height: 0 !important; width: 0 !important; position: absolute !important; pointer-events: none !important; }
                                 `;
                                 document.head.appendChild(style);
-                            })();
-                        """.trimIndent()
-                        
-                        val popupBlocker = """
-                            (function() {
+
+                                // 2. Popup Blocker (Aggressive)
                                 window.open = function() { return null; };
                                 window._open = window.open;
                                 document.addEventListener('click', function(e) {
-                                    const target = e.target;
-                                    if (target.tagName === 'A' && target.target === '_blank') {
+                                    const target = e.target.closest('a');
+                                    if (target && target.target === '_blank') {
                                         const href = target.href;
-                                        if (href && !href.includes('stream.terousd.online')) {
+                                        if (href && !href.includes('stream.terousd.online') && !href.includes('netflip') && !href.includes('terousd')) {
                                             e.preventDefault();
                                             e.stopPropagation();
                                         }
                                     }
                                 }, true);
-                            })();
-                        """.trimIndent()
-                        
-                        val mutationBlocker = """
-                            (function() {
-                                const adSelectors = ['.adsbygoogle', '[id*="ad-slot"]', '[class*="ad-unit"]'];
+
+                                // Intercept dynamic script injections
+                                const originalAppendChild = Node.prototype.appendChild;
+                                Node.prototype.appendChild = function(node) {
+                                    if (node.tagName === 'SCRIPT') {
+                                        const src = node.src || '';
+                                        if (src.includes('ads') || src.includes('pop') || src.includes('track') || src.includes('click')) {
+                                            if (!src.includes('stream.terousd.online') && !src.includes('netflip')) {
+                                                return node; // block execution
+                                            }
+                                        }
+                                    }
+                                    return originalAppendChild.call(this, node);
+                                };
+
+                                // 3. Mutation Observer for Ads and Text Replacement
+                                const adSelectors = ['.adsbygoogle', '[id*="ad-slot"]', '[class*="ad-unit"]', '.video-ads', '.ytp-ad-module', 'iframe[src*="ads"]', 'div[class*="ad-"]'];
                                 const observer = new MutationObserver(function(mutations) {
+                                    // Remove Ads
                                     adSelectors.forEach(sel => {
                                         document.querySelectorAll(sel).forEach(el => el.remove());
                                     });
+                                    // Auto-skip video ads
+                                    const skipBtn = document.querySelector('.ytp-ad-skip-button, .skip-ad, .video-ad-skip');
+                                    if(skipBtn) skipBtn.click();
+                                    const vids = document.querySelectorAll('video');
+                                    vids.forEach(v => {
+                                        if(v.closest('.ad-showing') || document.querySelector('.video-ads') || (v.src && (v.src.includes('1xbet') || v.src.includes('ads') || v.src.includes('aliexpress')))) {
+                                            if(isFinite(v.duration) && !isNaN(v.duration)) {
+                                                v.currentTime = v.duration;
+                                            } else {
+                                                v.muted = true;
+                                                v.style.display = 'none';
+                                            }
+                                        }
+                                    });
                                 });
                                 observer.observe(document.body, { childList: true, subtree: true });
+
+                                // 4. Text Replacement
+                                const replaceText = () => {
+                                    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                                    let node;
+                                    while(node = walk.nextNode()) {
+                                        if(node.nodeValue.match(/Terousd/i)) {
+                                            node.nodeValue = node.nodeValue.replace(/Terousd/gi, 'NETFLIP');
+                                        }
+                                    }
+                                };
+                                replaceText();
+                                setInterval(replaceText, 2000); // Check periodically
                             })();
                         """.trimIndent()
                         
-                        view?.evaluateJavascript(cssBlocker, null)
-                        view?.evaluateJavascript(popupBlocker, null)
-                        view?.evaluateJavascript(mutationBlocker, null)
+                        view?.evaluateJavascript(jsCode, null)
+                    }
+                    
+                    override fun shouldInterceptRequest(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): WebResourceResponse? {
+                        val url = request?.url?.toString() ?: return super.shouldInterceptRequest(view, request)
+                        
+                        val isAdDomain = adBlockDomains.any { url.contains(it, ignoreCase = true) }
+                        val isAdPath = adBlockPaths.any { url.contains(it, ignoreCase = true) }
+                        val isAdKeyword = adBlockKeywords.any { url.contains(it, ignoreCase = true) && !url.contains("stream.terousd.online", ignoreCase = true) }
+                        
+                        if (isAdDomain || isAdPath || isAdKeyword) {
+                            return WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream("".toByteArray()))
+                        }
+                        return super.shouldInterceptRequest(view, request)
+                    }
+                    
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val url = request?.url?.toString() ?: return false
+                        val isAdDomain = adBlockDomains.any { url.contains(it, ignoreCase = true) }
+                        val isAdPath = adBlockPaths.any { url.contains(it, ignoreCase = true) }
+                        val isAdKeyword = adBlockKeywords.any { url.contains(it, ignoreCase = true) && !url.contains("stream.terousd.online", ignoreCase = true) }
+                        
+                        if (isAdDomain || isAdPath || isAdKeyword) {
+                            return true // Block
+                        }
+                        
+                        return false // Allow
                     }
                 }
                 
@@ -610,4 +831,56 @@ fun TerousdWebView(
         },
         modifier = modifier
     )
+}
+
+@Composable
+fun SkeletonLoader() {
+    val infiniteTransition = rememberInfiniteTransition(label = "skeleton")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 0.6f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(top = 72.dp)
+            .padding(horizontal = 16.dp)
+    ) {
+        // Hero banner skeleton
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(200.dp)
+                .background(Color.DarkGray.copy(alpha = alpha), RoundedCornerShape(8.dp))
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Rows of items
+        repeat(3) {
+            Box(
+                modifier = Modifier
+                    .width(150.dp)
+                    .height(24.dp)
+                    .background(Color.DarkGray.copy(alpha = alpha), RoundedCornerShape(4.dp))
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                repeat(4) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(160.dp)
+                            .background(Color.DarkGray.copy(alpha = alpha), RoundedCornerShape(8.dp))
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
 }
