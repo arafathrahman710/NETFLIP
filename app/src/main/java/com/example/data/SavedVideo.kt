@@ -9,5 +9,6 @@ data class SavedVideo(
     val title: String,
     val url: String,
     val filePath: String? = null,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val streamUrl: String? = null
 )

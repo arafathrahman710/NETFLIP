@@ -15,6 +15,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -46,6 +47,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Star
+import com.example.gemini.GeminiAssistantDialog
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
@@ -62,6 +65,9 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -77,12 +83,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import android.util.Log
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -107,10 +116,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.geometry.toRect
+import androidx.compose.ui.graphics.drawscope.DrawScope
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Pre-create WebView cache directories to prevent Chromium simple_file_enumerator errors
+        try {
+            val webViewCacheDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
+            if (!webViewCacheDir.exists()) {
+                webViewCacheDir.mkdirs()
+            }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+        }
+
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -170,10 +196,11 @@ fun SplashScreen() {
 @Composable
 fun MainScreen() {
     var selectedTab by remember { mutableIntStateOf(0) }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var webViewRef by remember { mutableStateOf<android.webkit.WebView?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var canGoBack by remember { mutableStateOf(false) }
     var showDownloadDialog by remember { mutableStateOf(false) }
+    var showGeminiDialog by remember { mutableStateOf(false) }
     var showNotificationsDialog by remember { mutableStateOf(false) }
     var downloadIsSeries by remember { mutableStateOf(false) }
     var webViewOpacity by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
@@ -182,26 +209,174 @@ fun MainScreen() {
 
     var currentUrl by remember { mutableStateOf("") }
     var wasMoviePage by remember { mutableStateOf(false) }
+    var currentStreamUrl by remember { mutableStateOf<String?>(null) }
     
-    val activity = androidx.compose.ui.platform.LocalContext.current as? androidx.activity.ComponentActivity
+    var lastTouchX by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var lastTouchY by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var webViewWidth by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
+    var webViewHeight by remember { androidx.compose.runtime.mutableFloatStateOf(1f) }
+    val composeScope = androidx.compose.runtime.rememberCoroutineScope()
+
+    var isProfileVisible by remember { mutableStateOf(false) }
+    var profileScale by remember { androidx.compose.runtime.mutableFloatStateOf(0.15f) }
+    var profileOpacity by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var isBackAnimating by remember { mutableStateOf(false) }
+    var activePlayingVideoPath by remember { mutableStateOf<String?>(null) }
+    var activePlayingVideoTitle by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == 3) {
+            isProfileVisible = true
+            launch {
+                androidx.compose.animation.core.animate(
+                    initialValue = profileOpacity,
+                    targetValue = 1f,
+                    animationSpec = androidx.compose.animation.core.tween(
+                        durationMillis = 280,
+                        easing = androidx.compose.animation.core.LinearEasing
+                    )
+                ) { value, _ ->
+                    profileOpacity = value
+                }
+            }
+            launch {
+                androidx.compose.animation.core.animate(
+                    initialValue = profileScale,
+                    targetValue = 1f,
+                    animationSpec = androidx.compose.animation.core.tween(
+                        durationMillis = 380,
+                        easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+                    )
+                ) { value, _ ->
+                    profileScale = value
+                }
+            }
+        }
+    }
+    
+    val activity = androidx.activity.compose.LocalActivity.current
     val fullScreenHelper = remember(activity) { activity?.let { com.example.util.FullScreenHelper(it) } }
     val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isSmartEnhanceState by com.example.util.PreferencesManager.smartEnhanceFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isHdrState by com.example.util.PreferencesManager.hdrFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isDolbyVisionState by com.example.util.PreferencesManager.dolbyVisionFlow.collectAsStateWithLifecycle(initialValue = false)
+
+    // Dynamic HW HDR colorMode toggling for Vivo's HDR screen
+    LaunchedEffect(isHdrState, isDolbyVisionState) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            activity?.window?.colorMode = if (isHdrState || isDolbyVisionState) {
+                android.content.pm.ActivityInfo.COLOR_MODE_HDR
+            } else {
+                android.content.pm.ActivityInfo.COLOR_MODE_DEFAULT
+            }
+        }
+    }
+
+    // Dynamic screen brightness boosting for enhanced/HDR video playback
+    val cleanUrlLower = currentUrl.trim().lowercase()
+    val isMoviePageActive = cleanUrlLower.isNotEmpty() && 
+                            cleanUrlLower != "https://stream.terousd.online" && 
+                            cleanUrlLower != "https://stream.terousd.online/" && 
+                            cleanUrlLower != "http://stream.terousd.online" && 
+                            cleanUrlLower != "http://stream.terousd.online/" &&
+                            (cleanUrlLower.contains("/movie/") || cleanUrlLower.contains("/series/") || cleanUrlLower.contains("/watch/") || cleanUrlLower.contains("/play") || cleanUrlLower.contains("/title/") || cleanUrlLower.contains("/episode/"))
+
+    LaunchedEffect(isMoviePageActive, isHdrState, isDolbyVisionState, isSmartEnhanceState) {
+        activity?.window?.attributes?.let { layoutParams ->
+            if (isMoviePageActive && (isHdrState || isDolbyVisionState || isSmartEnhanceState)) {
+                layoutParams.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL
+            } else {
+                layoutParams.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
+            activity.window.attributes = layoutParams
+        }
+    }
 
     BackHandler(enabled = true) {
         if (fullScreenHelper?.isFullScreen() == true) {
             fullScreenHelper?.hideCustomView()
+        } else if (isProfileVisible) {
+            composeScope.launch {
+                val anim1 = launch {
+                    androidx.compose.animation.core.animate(
+                        initialValue = 1f,
+                        targetValue = 0f,
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = 250,
+                            easing = androidx.compose.animation.core.LinearEasing
+                        )
+                    ) { value, _ ->
+                        profileOpacity = value
+                    }
+                }
+                val anim2 = launch {
+                    androidx.compose.animation.core.animate(
+                        initialValue = 1f,
+                        targetValue = 0.15f,
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = 350,
+                            easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+                        )
+                    ) { value, _ ->
+                        profileScale = value
+                    }
+                }
+                anim1.join()
+                anim2.join()
+                selectedTab = 0
+                isProfileVisible = false
+            }
         } else if (selectedTab != 0) {
             selectedTab = 0
-        } else {
-            webViewRef?.evaluateJavascript(
-                "(function() { if (window.location.pathname !== \"/\" && window.location.pathname !== \"\") { window.history.back(); return \"true\"; } else { return \"false\"; } })();"
-            ) { result ->
-                if (result == "\"false\"") {
-                    if (webViewRef?.canGoBack() == true) {
+        } else if (wasMoviePage && !isBackAnimating) {
+            isBackAnimating = true
+            composeScope.launch {
+                val anim1 = launch {
+                    androidx.compose.animation.core.animate(
+                        initialValue = 1f,
+                        targetValue = 0f,
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = 220,
+                            easing = androidx.compose.animation.core.LinearEasing
+                        )
+                    ) { value, _ ->
+                        webViewOpacity = value
+                    }
+                }
+                val anim2 = launch {
+                    androidx.compose.animation.core.animate(
+                        initialValue = 1f,
+                        targetValue = 0.15f,
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = 350,
+                            easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+                        )
+                    ) { value, _ ->
+                        webViewScale = value
+                    }
+                }
+                anim1.join()
+                anim2.join()
+                
+                webViewRef?.evaluateJavascript("window.location.pathname") { path ->
+                    val cleanPath = path?.trim()?.replace("\"", "") ?: ""
+                    if (cleanPath != "/" && cleanPath != "" && cleanPath != "null") {
                         webViewRef?.goBack()
                     } else {
+                        webViewScale = 1f
+                        webViewOpacity = 1f
+                        isBackAnimating = false
                         activity?.finish()
                     }
+                }
+            }
+        } else {
+            webViewRef?.evaluateJavascript("window.location.pathname") { path ->
+                val cleanPath = path?.trim()?.replace("\"", "") ?: ""
+                if (cleanPath != "/" && cleanPath != "" && cleanPath != "null") {
+                    webViewRef?.goBack()
+                } else {
+                    activity?.finish()
                 }
             }
         }
@@ -229,15 +404,98 @@ fun MainScreen() {
                         onWebViewCreated = { webViewRef = it },
                         onLoadingStateChanged = { isLoading = it },
                         onNavigationStateChanged = { canGoBack = it },
-                        onUrlChanged = { currentUrl = it },
+                        onUrlChanged = { 
+                            if (currentUrl != it) {
+                                currentStreamUrl = null
+                            }
+                            currentUrl = it 
+                        },
+                        onLastTouchPositionChanged = { x, y ->
+                            lastTouchX = x
+                            lastTouchY = y
+                        },
+                        onVideoUrlDetected = { _, streamUrl ->
+                            android.util.Log.d("NetflipVideo", "Detected stream URL: $streamUrl")
+                            currentStreamUrl = streamUrl
+                        },
                         fullScreenHelper = fullScreenHelper,
                         modifier = Modifier
                             .fillMaxSize()
+                            .onSizeChanged { size ->
+                                webViewWidth = size.width.toFloat()
+                                webViewHeight = size.height.toFloat()
+                            }
                             .graphicsLayer {
                                 scaleX = webViewScale
                                 scaleY = webViewScale
-                                translationY = webViewOffsetY
                                 alpha = webViewOpacity
+                                val pX = if (webViewWidth > 0f) (lastTouchX / webViewWidth).coerceIn(0f, 1f) else 0.5f
+                                val pY = if (webViewHeight > 0f) (lastTouchY / webViewHeight).coerceIn(0f, 1f) else 0.5f
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(
+                                    if (lastTouchX == 0f && lastTouchY == 0f) 0.5f else pX,
+                                    if (lastTouchX == 0f && lastTouchY == 0f) 0.5f else pY
+                                )
+                            }
+                            .drawWithContent {
+                                val colorFilter = when {
+                                    isDolbyVisionState -> {
+                                        // Dolby Vision cinematic color profile: warm highlights, rich shadows, balanced amber/red saturation
+                                        val matrix = ColorMatrix().apply {
+                                            setToSaturation(1.35f)
+                                            val m = values
+                                            m[0] = m[0] * 1.12f // cinematic warm red
+                                            m[6] = m[6] * 1.02f // natural greens
+                                            m[12] = m[12] * 0.94f // cinema amber warm blue reduction
+                                            // Contrast calibration
+                                            m[0] = m[0] * 1.15f
+                                            m[6] = m[6] * 1.15f
+                                            m[12] = m[12] * 1.15f
+                                            m[4] = -10f // deepen black level shadows
+                                            m[9] = -10f
+                                            m[14] = -10f
+                                        }
+                                        ColorFilter.colorMatrix(matrix)
+                                    }
+                                    isHdrState -> {
+                                        // HDR software Simulation: Vivid peak brightness, deep black contrasts, expanded color saturation
+                                        val matrix = ColorMatrix().apply {
+                                            setToSaturation(1.45f) // Wide Color Gamut simulation
+                                            val m = values
+                                            m[0] = m[0] * 1.22f
+                                            m[6] = m[6] * 1.22f
+                                            m[12] = m[12] * 1.22f
+                                            m[4] = 12f // Simulate peak highlight luminance
+                                            m[9] = 12f
+                                            m[14] = 12f
+                                        }
+                                        ColorFilter.colorMatrix(matrix)
+                                    }
+                                    isSmartEnhanceState -> {
+                                        // Smart Enhance color profile: Clean vivid dynamic contrast, rich vibrant colors
+                                        val matrix = ColorMatrix().apply {
+                                            setToSaturation(1.38f)
+                                            val m = values
+                                            m[0] = m[0] * 1.12f
+                                            m[6] = m[6] * 1.12f
+                                            m[12] = m[12] * 1.12f
+                                        }
+                                        ColorFilter.colorMatrix(matrix)
+                                    }
+                                    else -> null
+                                }
+
+                                if (colorFilter != null) {
+                                    drawIntoCanvas { canvas ->
+                                        val paint = Paint().apply {
+                                            this.colorFilter = colorFilter
+                                        }
+                                        canvas.saveLayer(size.toRect(), paint)
+                                        drawContent()
+                                        canvas.restore()
+                                    }
+                                } else {
+                                    drawContent()
+                                }
                             }
                             .let {
                                 if (selectedTab > 1) it.background(NetflixDark) else it
@@ -334,14 +592,74 @@ fun MainScreen() {
 
                 if (isMoviePage) {
                     webViewOpacity = 0f
-                    webViewScale = 0.85f
-                    webViewOffsetY = 200f
+                    webViewScale = 0.15f
+                    webViewOffsetY = 0f
                     
-                    // Animate parallelly using coroutine launch
                     launch {
                         androidx.compose.animation.core.animate(
                             initialValue = 0f,
                             targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 280, 
+                                easing = androidx.compose.animation.core.LinearEasing
+                            )
+                        ) { value, _ ->
+                            webViewOpacity = value
+                        }
+                    }
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 0.15f,
+                            targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 420,
+                                easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+                            )
+                        ) { value, _ ->
+                            webViewScale = value
+                        }
+                    }
+                } else if (wasMovie && isBackAnimating) {
+                    webViewOpacity = 0f
+                    webViewScale = 0.95f
+                    webViewOffsetY = 0f
+                    
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 0f,
+                            targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 280, 
+                                easing = androidx.compose.animation.core.LinearEasing
+                            )
+                        ) { value, _ ->
+                            webViewOpacity = value
+                        }
+                    }
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 0.95f,
+                            targetValue = 1f,
+                            animationSpec = androidx.compose.animation.core.tween(
+                                durationMillis = 380,
+                                easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+                            )
+                        ) { value, _ ->
+                            webViewScale = value
+                        }
+                    }
+                    
+                    delay(380)
+                    isBackAnimating = false
+                } else if (wasMovie && !isBackAnimating) {
+                    webViewOpacity = 1f
+                    webViewScale = 1f
+                    webViewOffsetY = 0f
+                    
+                    launch {
+                        androidx.compose.animation.core.animate(
+                            initialValue = 1f,
+                            targetValue = 0f,
                             animationSpec = androidx.compose.animation.core.tween(
                                 durationMillis = 250, 
                                 easing = androidx.compose.animation.core.LinearEasing
@@ -352,58 +670,21 @@ fun MainScreen() {
                     }
                     launch {
                         androidx.compose.animation.core.animate(
-                            initialValue = 0.85f,
-                            targetValue = 1f,
-                            animationSpec = androidx.compose.animation.core.spring(
-                                dampingRatio = 0.8f,
-                                stiffness = 300f
-                            )
-                        ) { value, _ ->
-                            webViewScale = value
-                        }
-                    }
-                    launch {
-                        androidx.compose.animation.core.animate(
-                            initialValue = 200f,
-                            targetValue = 0f,
-                            animationSpec = androidx.compose.animation.core.spring(
-                                dampingRatio = 0.8f,
-                                stiffness = 300f
-                            )
-                        ) { value, _ ->
-                            webViewOffsetY = value
-                        }
-                    }
-                } else if (wasMovie) {
-                    webViewOpacity = 0f
-                    webViewScale = 1.15f
-                    webViewOffsetY = 0f
-                    
-                    launch {
-                        androidx.compose.animation.core.animate(
-                            initialValue = 0f,
-                            targetValue = 1f,
+                            initialValue = 1f,
+                            targetValue = 0.15f,
                             animationSpec = androidx.compose.animation.core.tween(
-                                durationMillis = 200, 
-                                easing = androidx.compose.animation.core.LinearEasing
-                            )
-                        ) { value, _ ->
-                            webViewOpacity = value
-                        }
-                    }
-                    launch {
-                        androidx.compose.animation.core.animate(
-                            initialValue = 1.15f,
-                            targetValue = 1f,
-                            animationSpec = androidx.compose.animation.core.spring(
-                                dampingRatio = 0.85f,
-                                stiffness = 350f
+                                durationMillis = 350,
+                                easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
                             )
                         ) { value, _ ->
                             webViewScale = value
                         }
                     }
-                } else {
+                    
+                    delay(350)
+                    webViewScale = 1f
+                    webViewOpacity = 1f
+                } else if (!isBackAnimating) {
                     webViewScale = 1f
                     webViewOffsetY = 0f
                     webViewOpacity = 0f
@@ -419,14 +700,7 @@ fun MainScreen() {
                     }
                 }
             }
-            LaunchedEffect(isLoading) {
-                if (isLoading) {
-                    delay(3000)
-                    if (isLoading) {
-                        webViewRef?.reload()
-                    }
-                }
-            }
+            // Removed automatic 3-second reload to prevent scroll resetting and infinite reload loops on slower networks
 
             // Search Bar Overlay
             if (selectedTab == 1) {
@@ -452,17 +726,7 @@ fun MainScreen() {
             AnimatedContent(
                 targetState = selectedTab,
                 transitionSpec = {
-                    if (targetState == 3) {
-                        (fadeIn(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) + 
-                         androidx.compose.animation.slideInVertically(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) { it / 2 }) togetherWith 
-                        fadeOut(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut))
-                    } else if (initialState == 3) {
-                        fadeIn(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) togetherWith 
-                        (fadeOut(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) + 
-                         androidx.compose.animation.slideOutVertically(animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInOut)) { it / 2 })
-                    } else {
-                        fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
-                    }
+                    fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
                 },
                 label = "Tab Transition"
             ) { targetTab ->
@@ -605,23 +869,102 @@ fun MainScreen() {
                                     }
                                     
                                     FloatingActionButton(
+                                        onClick = { showGeminiDialog = true },
+                                        containerColor = Color.DarkGray,
+                                    ) {
+                                        Icon(Icons.Default.Star, contentDescription = "Ask Gemini Assistant", tint = Color.White)
+                                    }
+                                    
+                                    FloatingActionButton(
                                         onClick = {
                                             webViewRef?.let { wv ->
                                                 val url = wv.url ?: ""
-                                                // Trigger fake download simulation
-                                                com.example.util.RealDownloadManager.startDownload(wv.context, wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video", url)
+                                                val title = wv.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: "Unknown Video"
+                                                if (currentStreamUrl != null) {
+                                                    if (currentStreamUrl!!.contains(".m3u8", ignoreCase = true)) {
+                                                        android.widget.Toast.makeText(wv.context, "Warning: This is an HLS (m3u8) stream. The downloaded file might just be a playlist and not the full video. Please find an MP4 source for full offline download.", android.widget.Toast.LENGTH_LONG).show()
+                                                    } else {
+                                                        android.widget.Toast.makeText(wv.context, "Starting real download: $title", android.widget.Toast.LENGTH_LONG).show()
+                                                    }
+                                                    com.example.util.RealDownloadManager.startDownload(wv.context, title, url, currentStreamUrl)
+                                                } else {
+                                                    android.widget.Toast.makeText(wv.context, "Please click Play on the movie/series first so we can grab the direct link!", android.widget.Toast.LENGTH_LONG).show()
+                                                    // DO NOT start download with null streamUrl!
+                                                }
                                             }
                                         },
-                                        containerColor = NetflixRed,
+                                        containerColor = if (currentStreamUrl != null) NetflixRed else Color.Gray,
                                     ) {
-                                        Icon(Icons.Default.Download, contentDescription = "Download Video", tint = Color.White)
+                                        Icon(
+                                            Icons.Default.Download,
+                                            contentDescription = "Download Video",
+                                            tint = if (currentStreamUrl != null) Color.White else Color.LightGray
+                                        )
                                     }
                                 }
                             }
                         }
                     }
-                    2 -> DownloadsScreen(onBackClick = { selectedTab = 0 })
-                    3 -> ProfileScreen(onHomeClick = { selectedTab = 0 }, onDownloadClick = { selectedTab = 2 })
+                    2 -> DownloadsScreen(
+                        onBackClick = { selectedTab = 0 },
+                        onPlayVideo = { path, title ->
+                            activePlayingVideoPath = path
+                            activePlayingVideoTitle = title
+                        }
+                    )
+                    3 -> Box(modifier = Modifier.fillMaxSize()) // Rendered smoothly via outer overlay container
+                }
+            }
+
+            if (isProfileVisible) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = profileScale
+                            scaleY = profileScale
+                            alpha = profileOpacity
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.9f, 0.05f)
+                        }
+                ) {
+                    ProfileScreen(
+                        onHomeClick = {
+                            composeScope.launch {
+                                val anim1 = launch {
+                                    androidx.compose.animation.core.animate(
+                                        initialValue = 1f,
+                                        targetValue = 0f,
+                                        animationSpec = androidx.compose.animation.core.tween(
+                                            durationMillis = 250,
+                                            easing = androidx.compose.animation.core.LinearEasing
+                                        )
+                                    ) { value, _ ->
+                                        profileOpacity = value
+                                    }
+                                }
+                                val anim2 = launch {
+                                    androidx.compose.animation.core.animate(
+                                        initialValue = 1f,
+                                        targetValue = 0.15f,
+                                        animationSpec = androidx.compose.animation.core.tween(
+                                            durationMillis = 350,
+                                            easing = androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+                                        )
+                                    ) { value, _ ->
+                                        profileScale = value
+                                    }
+                                }
+                                anim1.join()
+                                anim2.join()
+                                selectedTab = 0
+                                isProfileVisible = false
+                            }
+                        },
+                        onDownloadClick = {
+                            selectedTab = 2
+                            isProfileVisible = false
+                        }
+                    )
                 }
             }
             
@@ -738,6 +1081,24 @@ fun MainScreen() {
                     textContentColor = NetflixGrayText
                 )
             }
+
+            if (activePlayingVideoPath != null) {
+                OfflineVideoPlayer(
+                    filePath = activePlayingVideoPath!!,
+                    title = activePlayingVideoTitle ?: "Downloaded Video",
+                    onDismiss = {
+                        activePlayingVideoPath = null
+                        activePlayingVideoTitle = null
+                    }
+                )
+            }
+            if (showGeminiDialog) {
+                val currentTitle = webViewRef?.title?.replace(Regex("Terousd|terousd", RegexOption.IGNORE_CASE), "NETFLIP") ?: ""
+                GeminiAssistantDialog(
+                    currentMovieTitle = currentTitle,
+                    onDismiss = { showGeminiDialog = false }
+                )
+            }
         }
     }
 }
@@ -821,7 +1182,7 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
             }
             val capabilities = display?.hdrCapabilities?.supportedHdrTypes ?: intArrayOf()
             if (type == -1) capabilities.isNotEmpty() else capabilities.contains(type)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             false
         }
     }
@@ -880,7 +1241,7 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                     }
                     items(activeDownloads) { download ->
                         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).background(NetflixDarker, RoundedCornerShape(8.dp)).padding(16.dp)) {
-                            Text(download.title, color = Color.White, maxLines = 1)
+                            Text(download.title, color = Color.White, maxLines = 1, fontWeight = FontWeight.Bold)
                             Spacer(modifier = Modifier.height(8.dp))
                             androidx.compose.material3.LinearProgressIndicator(
                                 progress = { download.progress },
@@ -888,6 +1249,19 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
                                 color = NetflixRed,
                                 trackColor = Color.DarkGray
                             )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(
+                                    text = when (download.status) {
+                                        com.example.util.DownloadStatus.COMPLETED -> "Completed"
+                                        com.example.util.DownloadStatus.FAILED -> "Failed"
+                                        else -> "${(download.progress * 100).toInt()}%"
+                                    },
+                                    color = NetflixGrayText,
+                                    fontSize = 12.sp
+                                )
+                                Text(download.speedStr, color = NetflixGrayText, fontSize = 12.sp)
+                            }
                         }
                     }
                     item { Spacer(modifier = Modifier.height(16.dp)) }
@@ -1169,7 +1543,7 @@ fun ProfileScreen(onHomeClick: () -> Unit, onDownloadClick: () -> Unit) {
 }
 
 @Composable
-fun DownloadsScreen(onBackClick: () -> Unit) {
+fun DownloadsScreen(onBackClick: () -> Unit, onPlayVideo: (String, String) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
     val db = remember { AppDatabase.getDatabase(context) }
@@ -1205,7 +1579,7 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
                     }
                     items(activeDownloads) { download ->
                         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).background(NetflixDarker, RoundedCornerShape(8.dp)).padding(16.dp)) {
-                            Text(download.title, color = Color.White, maxLines = 1)
+                            Text(download.title, color = Color.White, maxLines = 1, fontWeight = FontWeight.Bold)
                             Spacer(modifier = Modifier.height(8.dp))
                             androidx.compose.material3.LinearProgressIndicator(
                                 progress = { download.progress },
@@ -1213,6 +1587,19 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
                                 color = NetflixRed,
                                 trackColor = Color.DarkGray
                             )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(
+                                    text = when (download.status) {
+                                        com.example.util.DownloadStatus.COMPLETED -> "Completed"
+                                        com.example.util.DownloadStatus.FAILED -> "Failed"
+                                        else -> "${(download.progress * 100).toInt()}%"
+                                    },
+                                    color = NetflixGrayText,
+                                    fontSize = 12.sp
+                                )
+                                Text(download.speedStr, color = NetflixGrayText, fontSize = 12.sp)
+                            }
                         }
                     }
                     item { Spacer(modifier = Modifier.height(16.dp)) }
@@ -1242,11 +1629,24 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
                         }
                     }
                     items(savedVideos) { video ->
+                        val playAction = {
+                            val path = video.filePath
+                            val isM3u8 = video.streamUrl?.contains(".m3u8") == true || path?.endsWith(".m3u8") == true
+                            if (!isM3u8 && path != null && (path.startsWith("content://") || path.startsWith("file://") || (java.io.File(path).exists() && java.io.File(path).length() > 5000))) {
+                                onPlayVideo(path, video.title)
+                            } else if (video.streamUrl != null) {
+                                // Fallback to the actual live movie stream URL if the file is not downloaded locally or is an m3u8
+                                onPlayVideo(video.streamUrl, video.title)
+                            } else {
+                                android.widget.Toast.makeText(context, "No valid video found to play.", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 8.dp)
                                 .background(NetflixDarker, RoundedCornerShape(8.dp))
+                                .clickable { playAction() }
                                 .padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1254,6 +1654,13 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
                                 Text(video.title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                                 Text(video.url.replace("stream.terousd.online", "netflip.com"), color = NetflixGrayText, fontSize = 12.sp, maxLines = 1)
                             }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Play Downloaded Video",
+                                tint = NetflixRed,
+                                modifier = Modifier.size(32.dp)
+                            )
                         }
                     }
                 }
@@ -1264,14 +1671,59 @@ fun DownloadsScreen(onBackClick: () -> Unit) {
 
 @Composable
 fun NetflipWebView(
-    onWebViewCreated: (WebView) -> Unit,
+    onWebViewCreated: (android.webkit.WebView) -> Unit,
     onLoadingStateChanged: (Boolean) -> Unit,
     onNavigationStateChanged: (Boolean) -> Unit,
     onUrlChanged: (String) -> Unit = {},
+    onLastTouchPositionChanged: (Float, Float) -> Unit = { _, _ -> },
+    onVideoUrlDetected: (String, String) -> Unit = { _, _ -> },
     fullScreenHelper: com.example.util.FullScreenHelper? = null,
     modifier: Modifier = Modifier
 ) {
     val isGlassmorphism by com.example.util.PreferencesManager.glassmorphismFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isSmartEnhance by com.example.util.PreferencesManager.smartEnhanceFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isHdr by com.example.util.PreferencesManager.hdrFlow.collectAsStateWithLifecycle(initialValue = false)
+    val isDolbyVision by com.example.util.PreferencesManager.dolbyVisionFlow.collectAsStateWithLifecycle(initialValue = false)
+
+    var webViewInstance by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    val scrollPositions = remember { mutableStateMapOf<String, Int>() }
+
+    LaunchedEffect(isSmartEnhance, isHdr, isDolbyVision, webViewInstance) {
+        webViewInstance?.let { webView ->
+            var filterString = ""
+            when {
+                isSmartEnhance && (isHdr || isDolbyVision) -> {
+                    filterString = "contrast(1.4) saturate(1.5) brightness(1.2) drop-shadow(0 0 5px rgba(255,255,255,0.2))"
+                }
+                isSmartEnhance -> {
+                    filterString = "contrast(1.15) saturate(1.2) brightness(1.05) drop-shadow(0 0 5px rgba(255,255,255,0.2))"
+                }
+                isHdr -> {
+                    filterString = "contrast(1.25) saturate(1.3) brightness(1.15)"
+                }
+                isDolbyVision -> {
+                    filterString = "contrast(1.3) saturate(1.3) brightness(1.1) sepia(0.12)"
+                }
+            }
+            val js = """
+                (function() {
+                    let style = document.getElementById('netflip-enhance-style');
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = 'netflip-enhance-style';
+                        document.head.appendChild(style);
+                    }
+                    if ('$filterString') {
+                        style.textContent = 'video { filter: $filterString !important; }';
+                    } else {
+                        style.textContent = '';
+                    }
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
+        }
+    }
+
     AndroidView(
         factory = { context ->
             val swipeRefreshLayout = SwipeRefreshLayout(context)
@@ -1283,6 +1735,18 @@ fun NetflipWebView(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
+                
+                addJavascriptInterface(object {
+                    @android.webkit.JavascriptInterface
+                    fun onVideoFound(streamUrl: String) {
+                        post {
+                            val currentWebpageUrl = url ?: ""
+                            if (currentWebpageUrl.isNotEmpty() && streamUrl.isNotEmpty() && isVideoStreamUrl(streamUrl)) {
+                                onVideoUrlDetected(currentWebpageUrl, streamUrl)
+                            }
+                        }
+                    }
+                }, "AndroidVideoExtractor")
                 
                 settings.apply {
                     javaScriptEnabled = true
@@ -1296,7 +1760,7 @@ fun NetflipWebView(
                     setSupportZoom(false)
                     builtInZoomControls = false
                     displayZoomControls = false
-                    cacheMode = WebSettings.LOAD_DEFAULT
+                    cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
                     databaseEnabled = true
                     setSupportMultipleWindows(true)
                     javaScriptCanOpenWindowsAutomatically = false
@@ -1323,6 +1787,22 @@ fun NetflipWebView(
                 
                 setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                 setBackgroundColor(android.graphics.Color.parseColor("#141414"))
+                
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    setOnScrollChangeListener { _, _, scrollY, _, _ ->
+                        val currentUrlStr = url
+                        if (currentUrlStr != null && scrollY > 0) {
+                            scrollPositions[currentUrlStr] = scrollY
+                        }
+                    }
+                }
+                
+                setOnTouchListener { _, event ->
+                    if (event.action == android.view.MotionEvent.ACTION_DOWN) {
+                        onLastTouchPositionChanged(event.x, event.y)
+                    }
+                    false
+                }
                 
                 setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
                     val request = android.app.DownloadManager.Request(android.net.Uri.parse(url)).apply {
@@ -1401,6 +1881,25 @@ fun NetflipWebView(
                         swipeRefreshLayout.isRefreshing = false
                         onNavigationStateChanged(view?.canGoBack() == true)
                         url?.let { onUrlChanged(it) }
+                        
+                        // Restore scroll position
+                        url?.let { currentUrl ->
+                            val savedScrollY = scrollPositions[currentUrl]
+                            if (savedScrollY != null && savedScrollY > 0) {
+                                view?.postDelayed({
+                                    view.scrollTo(0, savedScrollY)
+                                }, 100)
+                                view?.postDelayed({
+                                    view.scrollTo(0, savedScrollY)
+                                }, 300)
+                                view?.postDelayed({
+                                    view.scrollTo(0, savedScrollY)
+                                }, 600)
+                                view?.postDelayed({
+                                    view.scrollTo(0, savedScrollY)
+                                }, 1000)
+                            }
+                        }
                         
 
                         val isSmartEnhance = com.example.util.PreferencesManager.isSmartEnhanceEnabled(context)
@@ -1491,6 +1990,45 @@ fun NetflipWebView(
                                 };
                                 replaceText();
 
+                                // --- Video URL DOM Checker ---
+                                const checkVideos = () => {
+                                    try {
+                                        const vids = document.querySelectorAll('video');
+                                        vids.forEach(v => {
+                                            // Ignore if it looks like a banner ad video (small size)
+                                            if (v.clientWidth > 0 && v.clientWidth < 150) return;
+                                            // Ignore if it's a short video (under 3 minutes) if duration is known
+                                            if (v.duration && v.duration > 0 && v.duration < 180) return;
+                                            
+                                            if (v.src && v.src.startsWith('http') && !v.src.includes('blob:')) {
+                                                AndroidVideoExtractor.onVideoFound(v.src);
+                                            }
+                                            const sources = v.querySelectorAll('source');
+                                            sources.forEach(s => {
+                                                if (s.src && s.src.startsWith('http')) {
+                                                    AndroidVideoExtractor.onVideoFound(s.src);
+                                                }
+                                            });
+                                        });
+                                        const iframes = document.querySelectorAll('iframe');
+                                        iframes.forEach(iframe => {
+                                            try {
+                                                // Ignore small iframes
+                                                if (iframe.clientWidth > 0 && iframe.clientWidth < 150) return;
+                                                
+                                                if (iframe.src && iframe.src.startsWith('http')) {
+                                                    const src = iframe.src;
+                                                    if (src.includes('.mp4') || src.includes('.m3u8') || src.includes('embed') || src.includes('player') || src.includes('stream')) {
+                                                        AndroidVideoExtractor.onVideoFound(src);
+                                                    }
+                                                }
+                                            } catch(e) {}
+                                        });
+                                    } catch(e) {}
+                                };
+                                checkVideos();
+                                setInterval(checkVideos, 2500);
+
                                 // --- MutationObserver for ads added after page load ---
                                 const adSelectors = ['iframe[src*="ad"]', '.adsbygoogle', '[id*="ad-slot"]', '[class*="ad-unit"]'];
                                 const observer = new MutationObserver(function(mutations) {
@@ -1528,6 +2066,16 @@ fun NetflipWebView(
                         if (isAdDomain || isAdPath || isAdKeyword) {
                             return WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream("".toByteArray()))
                         }
+                        
+                        if (isVideoStreamUrl(url)) {
+                            view?.post {
+                                val currentWebpageUrl = view.url ?: ""
+                                if (currentWebpageUrl.isNotEmpty()) {
+                                    onVideoUrlDetected(currentWebpageUrl, url)
+                                }
+                            }
+                        }
+                        
                         return super.shouldInterceptRequest(view, request)
                     }
                     
@@ -1546,6 +2094,7 @@ fun NetflipWebView(
                 }
                 
                 loadUrl("https://stream.terousd.online/")
+                webViewInstance = this
                 onWebViewCreated(this)
             }
             
@@ -1610,4 +2159,290 @@ fun SkeletonLoader() {
             Spacer(modifier = Modifier.height(32.dp))
         }
     }
+}
+
+@Composable
+fun OfflineVideoPlayer(
+    filePath: String,
+    title: String,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var isPlaying by remember { mutableStateOf(false) }
+    var currentPosition by remember { mutableStateOf(0) }
+    var duration by remember { mutableStateOf(0) }
+    var videoViewRef by remember { mutableStateOf<android.widget.VideoView?>(null) }
+    var showControls by remember { mutableStateOf(true) }
+
+    // Auto-hide controls after 4 seconds
+    LaunchedEffect(showControls) {
+        if (showControls) {
+            delay(4000)
+            showControls = false
+        }
+    }
+
+    // Keep track of playback position
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            videoViewRef?.let {
+                currentPosition = it.currentPosition
+                duration = it.duration
+            }
+            delay(250)
+        }
+    }
+
+    androidx.compose.ui.window.Dialog(
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        ),
+        onDismissRequest = onDismiss
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null
+                ) {
+                    showControls = !showControls
+                }
+        ) {
+            // The Video View
+            AndroidView(
+                factory = { ctx ->
+                    android.widget.VideoView(ctx).apply {
+                        layoutParams = android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        try {
+                            if (filePath.startsWith("http://") || filePath.startsWith("https://") || filePath.startsWith("content://") || filePath.startsWith("file://")) {
+                                setVideoURI(android.net.Uri.parse(filePath))
+                            } else {
+                                val file = java.io.File(filePath)
+                                if (file.exists() && file.length() > 5000) {
+                                    setVideoURI(android.net.Uri.fromFile(file))
+                                } else {
+                                    android.widget.Toast.makeText(ctx, "Video file not found or corrupted.", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("OfflineVideoPlayer", "Error parsing file path: $filePath", e)
+                        }
+
+                        setOnPreparedListener { mp ->
+                            mp.isLooping = false
+                            duration = mp.duration
+                            start()
+                            isPlaying = true
+                        }
+                        setOnCompletionListener {
+                            isPlaying = false
+                            currentPosition = 0
+                            onDismiss()
+                        }
+                        setOnErrorListener { mp, what, extra ->
+                            Log.e("OfflineVideoPlayer", "VideoView Error: what=$what, extra=$extra")
+                            android.widget.Toast.makeText(ctx, "Video playback failed.", android.widget.Toast.LENGTH_LONG).show()
+                            onDismiss()
+                            true // Handled
+                        }
+                    }
+                },
+                update = { view ->
+                    videoViewRef = view
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Custom Video Overlay Controls
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showControls,
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.6f))
+                ) {
+                    // Header (Back + Title)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter)
+                            .padding(24.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        androidx.compose.material3.IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Close Player",
+                                tint = Color.White
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Text(
+                            text = title,
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+
+                    // Center Play/Pause & Seek 10s buttons
+                    Row(
+                        modifier = Modifier.align(Alignment.Center),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(40.dp)
+                    ) {
+                        // Rewind 10s
+                        androidx.compose.material3.IconButton(
+                            onClick = {
+                                videoViewRef?.let {
+                                    val target = (it.currentPosition - 10000).coerceAtLeast(0)
+                                    it.seekTo(target)
+                                    currentPosition = target
+                                }
+                            },
+                            modifier = Modifier.size(56.dp).background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Replay10,
+                                contentDescription = "Rewind 10 seconds",
+                                tint = Color.White,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+
+                        // Play/Pause
+                        androidx.compose.material3.IconButton(
+                            onClick = {
+                                videoViewRef?.let {
+                                    if (it.isPlaying) {
+                                        it.pause()
+                                        isPlaying = false
+                                    } else {
+                                        it.start()
+                                        isPlaying = true
+                                    }
+                                }
+                            },
+                            modifier = Modifier.size(72.dp).background(NetflixRed, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                tint = Color.White,
+                                modifier = Modifier.size(40.dp)
+                            )
+                        }
+
+                        // Forward 10s
+                        androidx.compose.material3.IconButton(
+                            onClick = {
+                                videoViewRef?.let {
+                                    val target = (it.currentPosition + 10000).coerceAtMost(it.duration)
+                                    it.seekTo(target)
+                                    currentPosition = target
+                                }
+                            },
+                            modifier = Modifier.size(56.dp).background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Forward10,
+                                contentDescription = "Forward 10 seconds",
+                                tint = Color.White,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+
+                    // Bottom Seekbar & Timing
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.BottomCenter)
+                            .padding(24.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = formatVideoTime(currentPosition),
+                                color = Color.White,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                text = formatVideoTime(duration),
+                                color = Color.White,
+                                fontSize = 14.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        androidx.compose.material3.Slider(
+                            value = if (duration > 0) currentPosition.toFloat() / duration else 0f,
+                            onValueChange = { progress ->
+                                videoViewRef?.let {
+                                    val target = (progress * it.duration).toInt()
+                                    it.seekTo(target)
+                                    currentPosition = target
+                                }
+                            },
+                            colors = androidx.compose.material3.SliderDefaults.colors(
+                                thumbColor = NetflixRed,
+                                activeTrackColor = NetflixRed,
+                                inactiveTrackColor = Color.Gray
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatVideoTime(ms: Int): String {
+    val totalSeconds = ms / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return String.format("%02d:%02d", minutes, seconds)
+}
+
+private fun isVideoStreamUrl(url: String): Boolean {
+    val lowerUrl = url.lowercase()
+    
+    // Ignore obvious advertising, analytical, or social trackers to avoid picking up ad videos
+    if (lowerUrl.contains("googleads") || lowerUrl.contains("doubleclick") || 
+        lowerUrl.contains("analytics") || lowerUrl.contains("facebook") || 
+        lowerUrl.contains("adservice") || lowerUrl.contains("adsense") ||
+        lowerUrl.contains("telemetry") || lowerUrl.contains("tracker") ||
+        lowerUrl.contains("/ad/") || lowerUrl.contains("/ads/") || lowerUrl.contains("banner")) {
+        return false
+    }
+    
+    // Check for standard stream formats, playlists, and video content types
+    return lowerUrl.endsWith(".mp4") || lowerUrl.contains(".mp4?") ||
+           lowerUrl.endsWith(".m3u8") || lowerUrl.contains(".m3u8?") ||
+           lowerUrl.endsWith(".mkv") || lowerUrl.contains(".mkv?") ||
+           lowerUrl.endsWith(".webm") || lowerUrl.contains(".webm?") ||
+           lowerUrl.endsWith(".ts") || lowerUrl.contains(".ts?") ||
+           lowerUrl.contains("master.m3u8") || lowerUrl.contains("playlist.m3u8") || 
+           lowerUrl.contains("index.m3u8") || lowerUrl.contains("videoplayback") ||
+           lowerUrl.contains("/stream/video/") || lowerUrl.contains("/get_file/") ||
+           lowerUrl.contains("/get-file/") || lowerUrl.contains("/embed/video/") ||
+           lowerUrl.contains("terousd.com/video/") || lowerUrl.contains("terabox.app/download") ||
+           lowerUrl.contains("video_info") || lowerUrl.contains("/play/video") ||
+           lowerUrl.contains("/share/streaming") || lowerUrl.contains("/api/download") ||
+           lowerUrl.contains(".html") && lowerUrl.contains("stream")
 }
